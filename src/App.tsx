@@ -1,4 +1,3 @@
-
 import { useState, type FormEvent } from "react";
 import {
   Search,
@@ -12,6 +11,10 @@ import {
   ChevronDown,
   Heart,
   ExternalLink,
+  ArrowLeft,
+  CalendarDays,
+  Wallet,
+  CheckCircle2,
 } from "lucide-react";
 
 const API_BASE_URL = "https://kaam-calm.onrender.com";
@@ -21,26 +24,14 @@ const portals = [
     name: "LinkedIn",
     url: "https://www.linkedin.com/jobs/search/?keywords=",
   },
-  {
-    name: "Naukri",
-    url: "https://www.naukri.com/",
-  },
-  {
-    name: "Indeed",
-    url: "https://www.indeed.com/jobs?q=",
-  },
+  { name: "Naukri", url: "https://www.naukri.com/" },
+  { name: "Indeed", url: "https://www.indeed.com/jobs?q=" },
   {
     name: "Glassdoor",
     url: "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=",
   },
-  {
-    name: "Google Jobs",
-    url: "https://www.google.com/search?q=",
-  },
-  {
-    name: "Unstop",
-    url: "https://unstop.com/",
-  },
+  { name: "Google Jobs", url: "https://www.google.com/search?q=" },
+  { name: "Unstop", url: "https://unstop.com/" },
 ];
 
 type Job = {
@@ -55,6 +46,7 @@ type Job = {
   type?: string;
   experience?: string;
   skills?: string[];
+  salary?: string;
 };
 
 function App() {
@@ -66,30 +58,23 @@ function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
 
   const filteredJobs = jobs.filter((job) => {
-    if (experience === "Any experience" || !job.experience) {
-      return true;
-    }
+    if (experience === "Any experience") return true;
 
-    const exp = job.experience.toLowerCase();
+    const exp = (job.experience || job.description || "").toLowerCase();
 
     if (experience === "Fresher") {
       return (
-        exp.includes("fresher") ||
-        exp.includes("entry") ||
-        exp.includes("intern") ||
-        exp.includes("graduate") ||
-        exp.includes("0-1") ||
-        exp.includes("0–1")
+        /fresher|entry.level|intern(ship)?|graduate|0\s*[-–]\s*1\s*year|no experience/.test(
+          exp
+        )
       );
     }
 
-    return !(
-      exp.includes("fresher") ||
-      exp.includes("entry level") ||
-      exp.includes("internship") ||
-      exp.includes("graduate")
+    return !/fresher|entry.level|intern(ship)?|graduate|no experience/.test(
+      exp
     );
   });
 
@@ -146,10 +131,12 @@ function App() {
     event?.preventDefault();
 
     const requestedRole = searchRole ?? role;
+
     if (searchRole !== undefined) {
       setRole(searchRole);
     }
 
+    setSelectedJob(null);
     setSearched(true);
     setLoading(true);
     setError("");
@@ -184,19 +171,22 @@ function App() {
             ? data.jobs
             : [];
 
-      const mappedJobs: Job[] = results.map((item: any, index: number) => ({
-        id: String(item.id ?? item.url ?? `${item.title ?? "job"}-${index}`),
-        title: item.title ?? "Untitled position",
-        company: item.company ?? "Company not specified",
-        location: item.location ?? "Location not specified",
-        description: item.description ?? "",
-        url: item.url ?? "",
-        source: item.source ?? "Job portal",
-        created: item.created ?? "",
-        type: item.type ?? "",
-        experience: item.experience ?? "",
-        skills: Array.isArray(item.skills) ? item.skills : [],
-      }));
+      const mappedJobs: Job[] = results.map(
+        (item: any, index: number) => ({
+          id: String(item.id ?? item.url ?? `${item.title ?? "job"}-${index}`),
+          title: item.title ?? "Untitled position",
+          company: item.company ?? "Company not specified",
+          location: item.location ?? "Location not specified",
+          description: item.description ?? "",
+          url: item.url ?? "",
+          source: item.source ?? "Job portal",
+          created: item.created ?? "",
+          type: item.type ?? "",
+          experience: item.experience ?? "",
+          skills: Array.isArray(item.skills) ? item.skills : [],
+          salary: item.salary ?? "",
+        })
+      );
 
       setJobs(mappedJobs);
 
@@ -218,13 +208,32 @@ function App() {
     setExperience("Any experience");
     setJobs([]);
     setSearched(false);
+    setSelectedJob(null);
     setError("");
+  };
+
+  const openJobDetails = (job: Job) => {
+    setSelectedJob(job);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const goBackToResults = () => {
+    setSelectedJob(null);
+    window.setTimeout(() => {
+      document.getElementById("jobs")?.scrollIntoView({
+        behavior: "smooth",
+      });
+    }, 0);
   };
 
   return (
     <main className="app-shell">
       <header className="navbar">
-        <a className="brand" href="#home">
+        <a
+          className="brand"
+          href="#home"
+          onClick={() => setSelectedJob(null)}
+        >
           <span className="brand-mark">k.</span>
           <span>
             kaam<span className="brand-dash">-</span>calm
@@ -232,9 +241,15 @@ function App() {
         </a>
 
         <nav className="nav-links">
-          <a href="#jobs">Explore jobs</a>
-          <a href="#how-it-works">How it works</a>
-          <a href="#for-recruiters">For recruiters</a>
+          <a href="#jobs" onClick={() => setSelectedJob(null)}>
+            Explore jobs
+          </a>
+          <a href="#how-it-works" onClick={() => setSelectedJob(null)}>
+            How it works
+          </a>
+          <a href="#for-recruiters" onClick={() => setSelectedJob(null)}>
+            For recruiters
+          </a>
         </nav>
 
         <div className="nav-actions">
@@ -273,11 +288,16 @@ function App() {
             Local and global opportunities
           </div>
 
-          <form className="search-panel" onSubmit={(event) => runSearch(event)}>
+          <form
+            className="search-panel"
+            onSubmit={(event) => runSearch(event)}
+          >
             <label className="search-field">
               <Search size={20} />
               <span className="field-content">
-                <span className="field-label">WHAT ARE YOU LOOKING FOR?</span>
+                <span className="field-label">
+                  WHAT ARE YOU LOOKING FOR?
+                </span>
                 <input
                   value={role}
                   onChange={(event) => setRole(event.target.value)}
@@ -300,8 +320,13 @@ function App() {
               </span>
             </label>
 
-            <button className="button button-search" type="submit" disabled={loading}>
-              <Search size={18} /> {loading ? "Searching..." : "Find jobs"}
+            <button
+              className="button button-search"
+              type="submit"
+              disabled={loading}
+            >
+              <Search size={18} />
+              {loading ? "Searching..." : "Find jobs"}
             </button>
           </form>
 
@@ -326,223 +351,510 @@ function App() {
         <div className="section-heading">
           <div>
             <span className="section-kicker">YOUR NEXT OPPORTUNITY</span>
-            <h2>{searched ? "Your search results" : "Explore opportunities"}</h2>
+            <h2>
+              {selectedJob
+                ? "Job details"
+                : searched
+                  ? "Your search results"
+                  : "Explore opportunities"}
+            </h2>
             <p>
-              {searched
-                ? "Explore live listings and open more job searches across supported portals."
-                : "Start with a search, then explore opportunities across supported portals."}
+              {selectedJob
+                ? "Review the role details before applying."
+                : searched
+                  ? "Explore live listings and open more job searches across supported portals."
+                  : "Start with a search, then explore opportunities across supported portals."}
             </p>
           </div>
 
-          <label className="experience-select">
-            <BriefcaseBusiness size={16} />
-            <select
-              value={experience}
-              onChange={(event) => setExperience(event.target.value)}
-            >
-              <option>Any experience</option>
-              <option>Fresher</option>
-              <option>Experienced</option>
-            </select>
-            <ChevronDown size={15} />
-          </label>
+          {!selectedJob && (
+            <label className="experience-select">
+              <BriefcaseBusiness size={16} />
+              <select
+                value={experience}
+                onChange={(event) => setExperience(event.target.value)}
+              >
+                <option>Any experience</option>
+                <option>Fresher</option>
+                <option>Experienced</option>
+              </select>
+              <ChevronDown size={15} />
+            </label>
+          )}
         </div>
 
-        <div className="jobs-layout">
-          <aside className="filter-card">
-            <div className="filter-heading">
-              <Globe2 size={18} />
-              <h3>Refine your search</h3>
-            </div>
-            <p>Find opportunities that fit your journey.</p>
-
-            <label className="filter-label" htmlFor="experience-filter">
-              Experience level
-            </label>
-            <select
-              id="experience-filter"
-              className="filter-select"
-              value={experience}
-              onChange={(event) => setExperience(event.target.value)}
+        {selectedJob ? (
+          <div className="job-details-page">
+            <button
+              type="button"
+              className="button button-ghost back-to-results"
+              onClick={goBackToResults}
             >
-              <option>Any experience</option>
-              <option>Fresher</option>
-              <option>Experienced</option>
-            </select>
-
-            <div className="filter-label">Popular job types</div>
-            <div className="filter-tags">
-              <span>Full-time</span>
-              <span>Remote</span>
-              <span>Internship</span>
-            </div>
-
-            <div className="filter-note">
-              <Sparkles size={16} />
-              More personalized filters are coming soon.
-            </div>
-
-            <button type="button" className="reset-button" onClick={resetSearch}>
-              Reset filters
+              <ArrowLeft size={17} />
+              Back to search results
             </button>
-          </aside>
 
-          <div className="job-results">
-            <div className="results-toolbar">
-              <span>
-                <strong>{filteredJobs.length}</strong>{" "}
-                {filteredJobs.length === 1 ? "job" : "jobs"} found
-              </span>
-              <span className="sort-label">
-                {jobs.length > 0 ? "Live results · Adzuna" : "Search to load live jobs"}
-              </span>
-            </div>
+            <article className="job-details-card">
+              <div className="details-company-header">
+                <div className="company-icon violet">
+                  <Building2 size={28} />
+                </div>
 
-            {loading && <p role="status">Loading real job opportunities...</p>}
+                <div className="details-company-info">
+                  <span className="section-kicker">JOB OPPORTUNITY</span>
+                  <h2>{selectedJob.title}</h2>
+                  <p>{selectedJob.company}</p>
+                </div>
 
-            {error && <p role="status">{error}</p>}
-
-            <div className="portal-grid">
-              {portals.map((portal) => (
                 <button
-                  key={portal.name}
                   type="button"
-                  className="portal-card"
-                  onClick={() => openPortal(portal.name)}
+                  className="save-button"
+                  aria-label={
+                    savedJobs.includes(selectedJob.id)
+                      ? "Unsave job"
+                      : "Save job"
+                  }
+                  onClick={() => toggleSaved(selectedJob.id)}
                 >
-                  <Globe2 size={20} />
-                  <span>{portal.name}</span>
-                  <ExternalLink size={15} />
+                  <Heart
+                    size={21}
+                    fill={
+                      savedJobs.includes(selectedJob.id)
+                        ? "currentColor"
+                        : "none"
+                    }
+                  />
                 </button>
-              ))}
-            </div>
+              </div>
 
-            {!loading && filteredJobs.length > 0 &&
-              filteredJobs.map((job, index) => (
-                <article className="job-card" key={job.id}>
-                  <div
-                    className={`company-icon ${["violet", "blue", "pink"][index % 3]}`}
-                  >
-                    <Building2 size={23} />
+              <div className="details-meta-grid">
+                <div className="details-meta-item">
+                  <MapPin size={19} />
+                  <div>
+                    <span>Location</span>
+                    <strong>{selectedJob.location}</strong>
                   </div>
+                </div>
 
-                  <div className="job-info">
-                    <div className="job-title-row">
-                      <h3>{job.title}</h3>
-                      <button
-                        type="button"
-                        className="save-button"
-                        aria-label={`${savedJobs.includes(job.id) ? "Unsave" : "Save"} ${job.title}`}
-                        onClick={() => toggleSaved(job.id)}
-                      >
-                        <Heart
-                          size={18}
-                          fill={savedJobs.includes(job.id) ? "currentColor" : "none"}
-                        />
-                      </button>
-                    </div>
+                <div className="details-meta-item">
+                  <Building2 size={19} />
+                  <div>
+                    <span>Company</span>
+                    <strong>{selectedJob.company}</strong>
+                  </div>
+                </div>
 
-                    <div className="company-name">{job.company}</div>
-
-                    <div className="job-metadata">
-                      <span><MapPin size={14} /> {job.location}</span>
-                      {job.type && (
-                        <span><BriefcaseBusiness size={14} /> {job.type}</span>
-                      )}
-                      {job.experience && (
-                        <span><Clock3 size={14} /> {job.experience}</span>
-                      )}
-                    </div>
-
-                    {job.description && (
-                      <p className="job-description">
-                        {job.description.length > 240
-                          ? `${job.description.slice(0, 240)}…`
-                          : job.description}
-                      </p>
-                    )}
-
-                    {job.skills && job.skills.length > 0 && (
-                      <div className="job-skills">
-                        {job.skills.map((skill) => (
-                          <span key={skill}>{skill}</span>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="job-footer">
-                      <span>
-                        {job.source}
-                        {job.created ? ` · ${job.created}` : ""}
-                      </span>
-                      {job.url ? (
-                        <a
-                          className="button button-primary"
-                          href={job.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          Apply now <ExternalLink size={14} />
-                        </a>
-                      ) : (
-                        <span className="sort-label">Application link unavailable</span>
-                      )}
+                {selectedJob.experience && (
+                  <div className="details-meta-item">
+                    <Clock3 size={19} />
+                    <div>
+                      <span>Experience</span>
+                      <strong>{selectedJob.experience}</strong>
                     </div>
                   </div>
-                </article>
-              ))}
+                )}
 
-            {!loading && filteredJobs.length === 0 && (
-              <div className="empty-state">
-                <Search size={28} />
-                <h3>{searched ? "No matching jobs yet" : "Ready to find your next role?"}</h3>
-                <p>
-                  {searched
-                    ? "Try another role or location, or open one of the job portals above."
-                    : "Enter a role and location above to search live job listings."}
-                </p>
-                {!searched && (
-                  <button
-                    type="button"
-                    className="button button-primary"
-                    onClick={() => document.getElementById("home")?.scrollIntoView({ behavior: "smooth" })}
-                  >
-                    Start searching <ArrowRight size={16} />
-                  </button>
+                {selectedJob.type && (
+                  <div className="details-meta-item">
+                    <BriefcaseBusiness size={19} />
+                    <div>
+                      <span>Employment type</span>
+                      <strong>{selectedJob.type}</strong>
+                    </div>
+                  </div>
+                )}
+
+                {selectedJob.salary && (
+                  <div className="details-meta-item">
+                    <Wallet size={19} />
+                    <div>
+                      <span>Salary</span>
+                      <strong>{selectedJob.salary}</strong>
+                    </div>
+                  </div>
+                )}
+
+                {selectedJob.created && (
+                  <div className="details-meta-item">
+                    <CalendarDays size={19} />
+                    <div>
+                      <span>Listing date</span>
+                      <strong>
+                        {Number.isNaN(Date.parse(selectedJob.created))
+                          ? selectedJob.created
+                          : new Date(selectedJob.created).toLocaleDateString()}
+                      </strong>
+                    </div>
+                  </div>
                 )}
               </div>
-            )}
 
-            <p className="sort-label">
-              {searchText
-                ? `Portal searches use: ${searchText}`
-                : "Enter a role and location to personalize portal searches."}
-            </p>
+              <section className="job-highlights">
+                <h3>
+                  <Sparkles size={19} />
+                  Job highlights
+                </h3>
+
+                <ul>
+                  <li>
+                    <CheckCircle2 size={17} />
+                    <span>
+                      <strong>Role:</strong> {selectedJob.title}
+                    </span>
+                  </li>
+                  <li>
+                    <CheckCircle2 size={17} />
+                    <span>
+                      <strong>Company:</strong> {selectedJob.company}
+                    </span>
+                  </li>
+                  <li>
+                    <CheckCircle2 size={17} />
+                    <span>
+                      <strong>Location:</strong> {selectedJob.location}
+                    </span>
+                  </li>
+
+                  {selectedJob.experience && (
+                    <li>
+                      <CheckCircle2 size={17} />
+                      <span>
+                        <strong>Experience:</strong> {selectedJob.experience}
+                      </span>
+                    </li>
+                  )}
+
+                  {selectedJob.type && (
+                    <li>
+                      <CheckCircle2 size={17} />
+                      <span>
+                        <strong>Job type:</strong> {selectedJob.type}
+                      </span>
+                    </li>
+                  )}
+
+                  {selectedJob.salary && (
+                    <li>
+                      <CheckCircle2 size={17} />
+                      <span>
+                        <strong>Salary:</strong> {selectedJob.salary}
+                      </span>
+                    </li>
+                  )}
+                </ul>
+              </section>
+
+              {selectedJob.skills && selectedJob.skills.length > 0 && (
+                <section className="details-section">
+                  <h3>Required skills</h3>
+                  <div className="job-skills">
+                    {selectedJob.skills.map((skill) => (
+                      <span key={skill}>{skill}</span>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <section className="details-section job-full-description">
+                <h3>Full job description</h3>
+                {selectedJob.description ? (
+                  <p>{selectedJob.description}</p>
+                ) : (
+                  <p>
+                    A detailed description has not been provided by the job
+                    source. Open the original listing to view more information.
+                  </p>
+                )}
+              </section>
+
+              <div className="details-apply-footer">
+                <div>
+                  <span className="section-kicker">LISTING SOURCE</span>
+                  <p>{selectedJob.source}</p>
+                </div>
+
+                {selectedJob.url ? (
+                  <a
+                    className="button button-primary apply-details-button"
+                    href={selectedJob.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Apply now <ExternalLink size={16} />
+                  </a>
+                ) : (
+                  <span className="sort-label">
+                    Application link unavailable
+                  </span>
+                )}
+              </div>
+            </article>
           </div>
-        </div>
+        ) : (
+          <div className="jobs-layout">
+            <aside className="filter-card">
+              <div className="filter-heading">
+                <Globe2 size={18} />
+                <h3>Refine your search</h3>
+              </div>
+
+              <p>Find opportunities that fit your journey.</p>
+
+              <label className="filter-label" htmlFor="experience-filter">
+                Experience level
+              </label>
+
+              <select
+                id="experience-filter"
+                className="filter-select"
+                value={experience}
+                onChange={(event) => setExperience(event.target.value)}
+              >
+                <option>Any experience</option>
+                <option>Fresher</option>
+                <option>Experienced</option>
+              </select>
+
+              <div className="filter-label">Popular job types</div>
+              <div className="filter-tags">
+                <span>Full-time</span>
+                <span>Remote</span>
+                <span>Internship</span>
+              </div>
+
+              <div className="filter-note">
+                <Sparkles size={16} />
+                More personalized filters are coming soon.
+              </div>
+
+              <button
+                type="button"
+                className="reset-button"
+                onClick={resetSearch}
+              >
+                Reset filters
+              </button>
+            </aside>
+
+            <div className="job-results">
+              <div className="results-toolbar">
+                <span>
+                  <strong>{filteredJobs.length}</strong>{" "}
+                  {filteredJobs.length === 1 ? "job" : "jobs"} found
+                </span>
+
+                <span className="sort-label">
+                  {jobs.length > 0
+                    ? "Live results · Adzuna"
+                    : "Search to load live jobs"}
+                </span>
+              </div>
+
+              {loading && (
+                <p role="status">Loading real job opportunities...</p>
+              )}
+
+              {error && <p role="status">{error}</p>}
+
+              <div className="portal-grid">
+                {portals.map((portal) => (
+                  <button
+                    key={portal.name}
+                    type="button"
+                    className="portal-card"
+                    onClick={() => openPortal(portal.name)}
+                  >
+                    <Globe2 size={20} />
+                    <span>{portal.name}</span>
+                    <ExternalLink size={15} />
+                  </button>
+                ))}
+              </div>
+
+              {!loading &&
+                filteredJobs.map((job, index) => (
+                  <article className="job-card" key={job.id}>
+                    <div
+                      className={`company-icon ${
+                        ["violet", "blue", "pink"][index % 3]
+                      }`}
+                    >
+                      <Building2 size={23} />
+                    </div>
+
+                    <div className="job-info">
+                      <div className="job-title-row">
+                        <button
+                          type="button"
+                          className="job-title-link"
+                          onClick={() => openJobDetails(job)}
+                        >
+                          {job.title}
+                        </button>
+
+                        <button
+                          type="button"
+                          className="save-button"
+                          aria-label={
+                            savedJobs.includes(job.id)
+                              ? `Unsave ${job.title}`
+                              : `Save ${job.title}`
+                          }
+                          onClick={() => toggleSaved(job.id)}
+                        >
+                          <Heart
+                            size={18}
+                            fill={
+                              savedJobs.includes(job.id)
+                                ? "currentColor"
+                                : "none"
+                            }
+                          />
+                        </button>
+                      </div>
+
+                      <div className="company-name">{job.company}</div>
+
+                      <div className="job-metadata">
+                        <span>
+                          <MapPin size={14} /> {job.location}
+                        </span>
+
+                        {job.type && (
+                          <span>
+                            <BriefcaseBusiness size={14} /> {job.type}
+                          </span>
+                        )}
+
+                        {job.experience && (
+                          <span>
+                            <Clock3 size={14} /> {job.experience}
+                          </span>
+                        )}
+                      </div>
+
+                      {job.description && (
+                        <p className="job-description">
+                          {job.description.length > 240
+                            ? `${job.description.slice(0, 240)}…`
+                            : job.description}
+                        </p>
+                      )}
+
+                      {job.skills && job.skills.length > 0 && (
+                        <div className="job-skills">
+                          {job.skills.map((skill) => (
+                            <span key={skill}>{skill}</span>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="job-footer">
+                        <span>
+                          {job.source}
+                          {job.created ? ` · ${job.created}` : ""}
+                        </span>
+
+                        <div className="job-card-actions">
+                          <button
+                            type="button"
+                            className="button button-ghost"
+                            onClick={() => openJobDetails(job)}
+                          >
+                            View details <ArrowRight size={14} />
+                          </button>
+
+                          {job.url ? (
+                            <a
+                              className="button button-primary"
+                              href={job.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              Apply now <ExternalLink size={14} />
+                            </a>
+                          ) : (
+                            <span className="sort-label">
+                              Application link unavailable
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+
+              {!loading && filteredJobs.length === 0 && (
+                <div className="empty-state">
+                  <Search size={28} />
+                  <h3>
+                    {searched
+                      ? "No matching jobs yet"
+                      : "Ready to find your next role?"}
+                  </h3>
+
+                  <p>
+                    {searched
+                      ? "Try another role or location, or open one of the job portals above."
+                      : "Enter a role and location above to search live job listings."}
+                  </p>
+
+                  {!searched && (
+                    <button
+                      type="button"
+                      className="button button-primary"
+                      onClick={() =>
+                        document
+                          .getElementById("home")
+                          ?.scrollIntoView({ behavior: "smooth" })
+                      }
+                    >
+                      Start searching <ArrowRight size={16} />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <p className="sort-label">
+                {searchText
+                  ? `Portal searches use: ${searchText}`
+                  : "Enter a role and location to personalize portal searches."}
+              </p>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="how-section" id="how-it-works">
         <span className="section-kicker">LESS SEARCHING. MORE LIVING.</span>
         <h2>Your next opportunity, made simpler.</h2>
+
         <div className="steps-grid">
           <article>
             <span className="step-number">01</span>
             <Search size={24} />
             <h3>Tell us what matters</h3>
-            <p>Choose your role, skills, experience and preferred location.</p>
+            <p>
+              Choose your role, skills, experience and preferred location.
+            </p>
           </article>
+
           <article>
             <span className="step-number">02</span>
             <Globe2 size={24} />
             <h3>Discover in one place</h3>
-            <p>Search live listings and open searches across supported portals.</p>
+            <p>
+              Search live listings and open searches across supported portals.
+            </p>
           </article>
+
           <article>
             <span className="step-number">03</span>
             <ArrowRight size={24} />
             <h3>Take your next step</h3>
-            <p>Review the original listing and continue to its application page.</p>
+            <p>
+              Review the original listing and continue to its application page.
+            </p>
           </article>
         </div>
       </section>
@@ -551,8 +863,12 @@ function App() {
         <div>
           <span className="section-kicker">FOR HIRING TEAMS</span>
           <h2>Good people deserve to find each other.</h2>
-          <p>Recruiter tools and candidate management are planned for a later phase.</p>
+          <p>
+            Recruiter tools and candidate management are planned for a later
+            phase.
+          </p>
         </div>
+
         <a className="button button-light" href="#jobs">
           Recruiter features <ArrowRight size={16} />
         </a>
@@ -565,6 +881,7 @@ function App() {
             kaam<span className="brand-dash">-</span>calm
           </span>
         </a>
+
         <span>Your career. One calm search.</span>
         <span>Built to make job discovery simpler.</span>
       </footer>
