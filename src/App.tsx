@@ -1,4 +1,3 @@
-
 import { useState } from "react";
 import {
   Search,
@@ -11,39 +10,52 @@ import {
   Clock3,
   ChevronDown,
   Heart,
+  ExternalLink,
 } from "lucide-react";
 
-type Job = {
-  title: string;
-  company: string;
-  location: string;
-  type: string;
-  experience: string;
-  source: string;
-  skills: string[];
-  color: string;
-};
+const portals = [
+  {
+    name: "LinkedIn",
+    url: "https://www.linkedin.com/jobs/search/?keywords=",
+  },
+  {
+    name: "Naukri",
+    url: "https://www.naukri.com/",
+  },
+  {
+    name: "Indeed",
+    url: "https://www.indeed.com/jobs?q=",
+  },
+  {
+    name: "Glassdoor",
+    url: "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=",
+  },
+  {
+    name: "Google Jobs",
+    url: "https://www.google.com/search?q=",
+  },
+  {
+    name: "Unstop",
+    url: "https://unstop.com/",
+  },
+];
 
-const jobs: Job[] = [
+const demoJobs = [
   {
     title: "Software Development Engineer",
     company: "Example Technology",
     location: "Bengaluru, India",
     type: "Full-time",
     experience: "Fresher",
-    source: "Company Careers",
     skills: ["Java", "SQL", "Problem Solving"],
-    color: "violet",
   },
   {
     title: "Junior Data Analyst",
     company: "Example Analytics",
     location: "Hyderabad, India",
     type: "Full-time",
-    experience: "0–1 years",
-    source: "Company Careers",
+    experience: "Experienced",
     skills: ["Python", "SQL", "Excel"],
-    color: "blue",
   },
   {
     title: "Frontend Developer",
@@ -51,9 +63,7 @@ const jobs: Job[] = [
     location: "Remote · India",
     type: "Remote",
     experience: "Fresher",
-    source: "Company Careers",
     skills: ["React", "TypeScript", "CSS"],
-    color: "pink",
   },
 ];
 
@@ -62,8 +72,9 @@ function App() {
   const [location, setLocation] = useState("");
   const [experience, setExperience] = useState("Any experience");
   const [searched, setSearched] = useState(false);
+  const [savedJobs, setSavedJobs] = useState<string[]>([]);
 
-  const filteredJobs = jobs.filter((job) => {
+  const filteredJobs = demoJobs.filter((job) => {
     const matchesRole =
       !role ||
       `${job.title} ${job.skills.join(" ")}`
@@ -82,10 +93,54 @@ function App() {
     return matchesRole && matchesLocation && matchesExperience;
   });
 
+  const searchText = [role, location, experience !== "Any experience" ? experience : ""]
+    .filter(Boolean)
+    .join(" ");
+
+  const openPortal = (portalName: string) => {
+    const query = encodeURIComponent(
+      [role || "jobs", location, experience !== "Any experience" ? experience : ""]
+        .filter(Boolean)
+        .join(" ")
+    );
+
+    const portal = portals.find((item) => item.name === portalName);
+    if (!portal) return;
+
+    let url = portal.url;
+
+    if (portalName === "Naukri") {
+      url = `https://www.naukri.com/${(role || "jobs").toLowerCase().trim().replace(/\s+/g, "-")}-jobs`;
+      if (location.trim()) {
+        url += `-in-${location.toLowerCase().trim().replace(/\s+/g, "-")}`;
+      }
+    } else if (portalName === "Unstop") {
+      url = `https://unstop.com/search?query=${query}`;
+    } else {
+      url += query;
+    }
+
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
+  const toggleSaved = (title: string) => {
+    setSavedJobs((current) =>
+      current.includes(title)
+        ? current.filter((item) => item !== title)
+        : [...current, title]
+    );
+  };
+
+  const runSearch = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSearched(true);
+    document.getElementById("jobs")?.scrollIntoView({ behavior: "smooth" });
+  };
+
   return (
     <main className="app-shell">
       <header className="navbar">
-        <a className="brand" href="#home" aria-label="Kaam-Calm home">
+        <a className="brand" href="#home">
           <span className="brand-mark">k.</span>
           <span>kaam<span className="brand-dash">-</span>calm</span>
         </a>
@@ -97,12 +152,10 @@ function App() {
         </nav>
 
         <div className="nav-actions">
-          <button className="button button-ghost" onClick={() => alert("Account sign-in will be added in a later phase.")}>
-            Log in
-          </button>
-          <button className="button button-primary" onClick={() => alert("Account creation will be added in a later phase.")}>
+          <a className="button button-ghost" href="#jobs">Log in</a>
+          <a className="button button-primary" href="#jobs">
             Get started <ArrowRight size={16} />
-          </button>
+          </a>
         </div>
       </header>
 
@@ -112,8 +165,7 @@ function App() {
 
         <div className="hero-content">
           <div className="eyebrow">
-            <Sparkles size={14} />
-            YOUR NEXT CHAPTER STARTS HERE
+            <Sparkles size={14} /> YOUR NEXT CHAPTER STARTS HERE
           </div>
 
           <h1>
@@ -129,19 +181,11 @@ function App() {
 
           <div className="source-strip">
             <span className="source-dot" />
-            Multiple job sources
-            <span className="source-divider">·</span>
+            Multiple job sources <span className="source-divider">·</span>
             Local and global opportunities
           </div>
 
-          <form
-            className="search-panel"
-            onSubmit={(event) => {
-              event.preventDefault();
-              setSearched(true);
-              document.getElementById("jobs")?.scrollIntoView({ behavior: "smooth" });
-            }}
-          >
+          <form className="search-panel" onSubmit={runSearch}>
             <label className="search-field">
               <Search size={20} />
               <span className="field-content">
@@ -169,8 +213,7 @@ function App() {
             </label>
 
             <button className="button button-search" type="submit">
-              <Search size={18} />
-              Find jobs
+              <Search size={18} /> Find jobs
             </button>
           </form>
 
@@ -200,20 +243,17 @@ function App() {
             <h2>{searched ? "Your search results" : "Explore opportunities"}</h2>
             <p>
               {searched
-                ? `Showing ${filteredJobs.length} matching demonstration listings.`
-                : "A first look at how your job discovery dashboard will feel."}
+                ? "Search job portals or explore matching demonstration listings."
+                : "Start with one search, then explore jobs across supported portals."}
             </p>
           </div>
 
           <label className="experience-select">
             <BriefcaseBusiness size={16} />
-            <select
-              value={experience}
-              onChange={(event) => {
-                setExperience(event.target.value);
-                setSearched(true);
-              }}
-            >
+            <select value={experience} onChange={(event) => {
+              setExperience(event.target.value);
+              setSearched(true);
+            }}>
               <option>Any experience</option>
               <option>Fresher</option>
               <option>Experienced</option>
@@ -259,15 +299,12 @@ function App() {
               More personalized filters are coming soon.
             </div>
 
-            <button
-              className="reset-button"
-              onClick={() => {
-                setRole("");
-                setLocation("");
-                setExperience("Any experience");
-                setSearched(false);
-              }}
-            >
+            <button className="reset-button" onClick={() => {
+              setRole("");
+              setLocation("");
+              setExperience("Any experience");
+              setSearched(false);
+            }}>
               Reset filters
             </button>
           </aside>
@@ -280,10 +317,24 @@ function App() {
               <span className="sort-label">Sample data · Not live jobs</span>
             </div>
 
+            <div className="portal-grid">
+              {portals.map((portal) => (
+                <button
+                  key={portal.name}
+                  className="portal-card"
+                  onClick={() => openPortal(portal.name)}
+                >
+                  <Globe2 size={20} />
+                  <span>{portal.name}</span>
+                  <ExternalLink size={15} />
+                </button>
+              ))}
+            </div>
+
             {filteredJobs.length > 0 ? (
-              filteredJobs.map((job) => (
+              filteredJobs.map((job, index) => (
                 <article className="job-card" key={job.title}>
-                  <div className={`company-icon ${job.color}`}>
+                  <div className={`company-icon ${["violet", "blue", "pink"][index % 3]}`}>
                     <Building2 size={23} />
                   </div>
 
@@ -293,9 +344,12 @@ function App() {
                       <button
                         className="save-button"
                         aria-label={`Save ${job.title}`}
-                        onClick={() => alert("Saved jobs will be available after account features are implemented.")}
+                        onClick={() => toggleSaved(job.title)}
                       >
-                        <Heart size={18} />
+                        <Heart
+                          size={18}
+                          fill={savedJobs.includes(job.title) ? "currentColor" : "none"}
+                        />
                       </button>
                     </div>
 
@@ -308,13 +362,11 @@ function App() {
                     </div>
 
                     <div className="job-skills">
-                      {job.skills.map((skill) => (
-                        <span key={skill}>{skill}</span>
-                      ))}
+                      {job.skills.map((skill) => <span key={skill}>{skill}</span>)}
                     </div>
 
                     <div className="job-footer">
-                      <span>Source: {job.source}</span>
+                      <span>Sample listing</span>
                       <span className="sample-label">DEMO LISTING</span>
                     </div>
                   </div>
@@ -324,20 +376,23 @@ function App() {
               <div className="empty-state">
                 <Search size={28} />
                 <h3>No matching demo listings</h3>
-                <p>Try another role, skill or location.</p>
-                <button
-                  className="button button-primary"
-                  onClick={() => {
-                    setRole("");
-                    setLocation("");
-                    setExperience("Any experience");
-                    setSearched(false);
-                  }}
-                >
+                <p>Try another role, skill or location, or search the job portals above.</p>
+                <button className="button button-primary" onClick={() => {
+                  setRole("");
+                  setLocation("");
+                  setExperience("Any experience");
+                  setSearched(false);
+                }}>
                   Clear search
                 </button>
               </div>
             )}
+
+            <p className="sort-label">
+              {searchText
+                ? `Portal searches use: ${searchText}`
+                : "Enter a role and location to personalize portal searches."}
+            </p>
           </div>
         </div>
       </section>
@@ -356,7 +411,7 @@ function App() {
             <span className="step-number">02</span>
             <Globe2 size={24} />
             <h3>Discover in one place</h3>
-            <p>Explore opportunities collected from supported job sources.</p>
+            <p>Open job searches across supported portals from one dashboard.</p>
           </article>
           <article>
             <span className="step-number">03</span>
@@ -371,17 +426,11 @@ function App() {
         <div>
           <span className="section-kicker">FOR HIRING TEAMS</span>
           <h2>Good people deserve to find each other.</h2>
-          <p>
-            We're planning tools to help recruiters connect with suitable
-            candidates and manage opportunities.
-          </p>
+          <p>Recruiter tools and candidate management are planned for a later phase.</p>
         </div>
-        <button
-          className="button button-light"
-          onClick={() => alert("Recruiter features will be developed in a later phase.")}
-        >
+        <a className="button button-light" href="#jobs">
           Recruiter features <ArrowRight size={16} />
-        </button>
+        </a>
       </section>
 
       <footer className="footer">
