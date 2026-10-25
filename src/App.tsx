@@ -53,6 +53,7 @@ function App() {
   const [role, setRole] = useState("");
   const [location, setLocation] = useState("");
   const [experience, setExperience] = useState("Any experience");
+  const [jobType, setJobType] = useState("All types");
   const [searched, setSearched] = useState(false);
   const [savedJobs, setSavedJobs] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -61,22 +62,46 @@ function App() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
 
   const filteredJobs = jobs.filter((job) => {
-    if (experience === "Any experience") return true;
+  const description = (job.description || "").toLowerCase();
+  const title = (job.title || "").toLowerCase();
+  const type = (job.type || "").toLowerCase();
 
-    const exp = (job.experience || job.description || "").toLowerCase();
-
-    if (experience === "Fresher") {
-      return (
-        /fresher|entry.level|intern(ship)?|graduate|0\s*[-–]\s*1\s*year|no experience/.test(
-          exp
-        )
+  if (experience === "Fresher") {
+    const isFresher =
+      /fresher|entry.level|intern(ship)?|graduate|0\s*[-–]\s*1\s*year|no experience/.test(
+        `${title} ${description} ${type}`
       );
-    }
 
-    return !/fresher|entry.level|intern(ship)?|graduate|no experience/.test(
-      exp
-    );
-  });
+    if (!isFresher) return false;
+  }
+
+  if (experience === "Experienced") {
+    const isFresher =
+      /fresher|entry.level|intern(ship)?|graduate|no experience/.test(
+        `${title} ${description} ${type}`
+      );
+
+    if (isFresher) return false;
+  }
+
+  if (jobType === "Full-time") {
+    if (!/full.time|permanent/i.test(type)) return false;
+  }
+
+  if (jobType === "Remote") {
+    if (!/remote|work from home|work from anywhere/i.test(
+      `${title} ${description} ${type}`
+    )) return false;
+  }
+
+  if (jobType === "Internship") {
+    if (!/intern(ship)?/i.test(`${title} ${description} ${type}`)) {
+      return false;
+    }
+  }
+
+  return true;
+});
 
   const searchText = [
     role,
@@ -206,6 +231,7 @@ function App() {
     setRole("");
     setLocation("");
     setExperience("Any experience");
+    setJobType("All types");
     setJobs([]);
     setSearched(false);
     setSelectedJob(null);
@@ -615,11 +641,19 @@ function App() {
                 <option>Experienced</option>
               </select>
 
-              <div className="filter-label">Popular job types</div>
-              <div className="filter-tags">
-                <span>Full-time</span>
-                <span>Remote</span>
-                <span>Internship</span>
+              <div className="filter-label">Job type</div>
+              <div className="filter-tags" role="group" aria-label="Filter jobs by type">
+                {["All types", "Full-time", "Remote", "Internship"].map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    className={`filter-tag-button ${jobType === type ? "active" : ""}`}
+                    aria-pressed={jobType === type}
+                    onClick={() => setJobType(type)}
+                  >
+                    {type}
+                  </button>
+                ))}
               </div>
 
               <div className="filter-note">
