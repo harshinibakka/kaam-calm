@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { supabase, supabaseConfiguration } from "./lib/supabase";
+import ProfileDashboard from "./components/ProfileDashboard";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "https://kaam-calm.onrender.com";
@@ -136,6 +137,7 @@ function App() {
   const [accountNotice, setAccountNotice] = useState("");
   const [saveError, setSaveError] = useState("");
   const [showSavedJobs, setShowSavedJobs] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const activeRequestRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => activeRequestRef.current?.abort(), []);
@@ -155,6 +157,7 @@ function App() {
         setAuthNotice("");
         if (event === "SIGNED_OUT") {
           setShowSavedJobs(false);
+          setShowProfile(false);
           setAccountNotice("Your session ended. Sign in again to access saved jobs.");
         } else {
           setAccountNotice("");
@@ -391,6 +394,7 @@ function App() {
 
     setSelectedJob(null);
     setShowSavedJobs(false);
+    setShowProfile(false);
     setSearched(true);
     setLoading(true);
     setLoadingMore(false);
@@ -532,6 +536,7 @@ function App() {
           <a href="#for-recruiters" onClick={() => setSelectedJob(null)}>
             For recruiters
           </a>
+          {session && <button className="nav-profile-link" type="button" onClick={() => { setShowProfile(true); setShowSavedJobs(false); setSelectedJob(null); }} aria-current={showProfile ? "page" : undefined}>My Profile</button>}
         </nav>
 
         <div className="nav-actions">
@@ -545,6 +550,7 @@ function App() {
                 className="button button-ghost"
                 type="button"
                 onClick={() => {
+                  setShowProfile(false);
                   setShowSavedJobs((current) => !current);
                   setSelectedJob(null);
                   setSaveError("");
@@ -582,6 +588,11 @@ function App() {
         </div>
       </header>
       {accountNotice && <p className="account-notice" role="status">{accountNotice}</p>}
+
+      {showProfile && session ? (
+        <ProfileDashboard userId={session.user.id} email={session.user.email} />
+      ) : (
+      <>
 
       <section className="hero" id="home">
         <div className="hero-orb orb-one" />
@@ -1229,6 +1240,8 @@ function App() {
         <span>Your career. One calm search.</span>
         <span>Built to make job discovery simpler.</span>
       </footer>
+      </>
+      )}
 
       {authOpen && (
         <div className="auth-overlay">

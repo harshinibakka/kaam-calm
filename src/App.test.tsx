@@ -80,6 +80,7 @@ function createSupabaseMock(initialSession: any = null, initialRows: any[] = [])
             data: rows.filter((row) => row.user_id === userId),
             error: null,
           })),
+          maybeSingle: vi.fn(async () => ({ data: null, error: null })),
         })),
       })),
       insert: vi.fn(async (row) => {
@@ -126,6 +127,19 @@ describe("job search flows", () => {
     cleanup();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("shows My Profile only for a restored signed-in session and opens the dashboard", async () => {
+    const mock = createSupabaseMock({ user: { id: "user-1", email: "person@example.com" } });
+    supabaseMockState.client = mock.client;
+    supabaseMockState.configuration = "configured";
+    render(<App />);
+
+    const profileLink = await screen.findByRole("button", { name: "My Profile" });
+    await userEvent.setup().click(profileLink);
+    expect(await screen.findByRole("heading", { name: "Build your job-seeker profile" })).toBeTruthy();
+    expect(mock.client.from).toHaveBeenCalledWith("job_seeker_profiles");
+    expect(screen.queryByPlaceholderText("Job title or skill")).toBeNull();
   });
 
   it("sends role and location and maps the backend jobs response", async () => {
