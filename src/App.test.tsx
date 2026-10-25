@@ -113,6 +113,7 @@ function createSupabaseMock(initialSession: any = null, initialRows: any[] = [])
 
 describe("job search flows", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     supabaseMockState.client = null;
     supabaseMockState.configuration = "missing";
     vi.stubGlobal("fetch", vi.fn());
@@ -140,6 +141,50 @@ describe("job search flows", () => {
     expect(await screen.findByRole("heading", { name: "Build your job-seeker profile" })).toBeTruthy();
     expect(mock.client.from).toHaveBeenCalledWith("job_seeker_profiles");
     expect(screen.queryByPlaceholderText("Job title or skill")).toBeNull();
+  });
+
+  it("switches themes immediately and persists the choice for the current account key", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open navigation menu" }));
+    await user.click(screen.getByRole("button", { name: "Dark" }));
+    expect(document.querySelector(".app-shell")?.getAttribute("data-theme")).toBe("dark");
+    expect(window.localStorage.getItem("kaam-calm-theme:anonymous")).toBe("dark");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Main navigation" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open navigation menu" }));
+    await user.click(screen.getByRole("button", { name: "Light" }));
+    expect(document.querySelector(".app-shell")?.getAttribute("data-theme")).toBe("light");
+  });
+
+  it("uses the device color preference when System is selected", async () => {
+    const listeners: Array<(event: MediaQueryListEvent) => void> = [];
+    let matches = true;
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ get matches() { return matches; }, media: "(prefers-color-scheme: dark)", addEventListener: (_event: string, listener: (event: MediaQueryListEvent) => void) => listeners.push(listener), removeEventListener: vi.fn() })));
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open navigation menu" }));
+    await user.click(screen.getByRole("button", { name: "System" }));
+    await waitFor(() => expect(document.querySelector(".app-shell")?.getAttribute("data-theme")).toBe("dark"));
+    matches = false;
+    listeners.forEach((listener) => listener({ matches: false } as MediaQueryListEvent));
+    await waitFor(() => expect(document.querySelector(".app-shell")?.getAttribute("data-theme")).toBe("light"));
+  });
+
+  it("shows honest empty states for applications and notifications", async () => {
+    const mock = createSupabaseMock({ user: { id: "user-1", email: "person@example.com" } });
+    supabaseMockState.client = mock.client;
+    supabaseMockState.configuration = "configured";
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Open navigation menu" }));
+    await user.click(screen.getByRole("button", { name: "Applied Jobs" }));
+    expect(await screen.findByRole("heading", { name: "Applied Jobs" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Main navigation" })).toBeNull();
+    expect(screen.getByText(/does not receive application confirmations/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    expect(await screen.findByRole("heading", { name: "Notifications" })).toBeTruthy();
+    expect(screen.getByText(/no notification source configured/)).toBeTruthy();
   });
 
   it("sends role and location and maps the backend jobs response", async () => {

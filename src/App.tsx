@@ -17,6 +17,15 @@ import {
   Wallet,
   CheckCircle2,
   X,
+  Menu,
+  Bell,
+  House,
+  UserRound,
+  FileText,
+  Bookmark,
+  SlidersHorizontal,
+  Settings,
+  CircleHelp,
 } from "lucide-react";
 import { supabase, supabaseConfiguration } from "./lib/supabase";
 import ProfileDashboard from "./components/ProfileDashboard";
@@ -43,6 +52,29 @@ type JobsResponse = {
   jobs: unknown[];
   has_more?: boolean;
 };
+
+type DashboardView = "home" | "applied" | "profile" | "notifications";
+type ThemeChoice = "light" | "dark" | "system";
+
+function getThemeChoice(key: string): ThemeChoice {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value === "light" || value === "dark" || value === "system" ? value : "system";
+  } catch {
+    return "system";
+  }
+}
+
+function profileProgress(value: Record<string, unknown>): number {
+  const checks = [value.full_name, value.location, value.headline, value.summary, value.skills, value.education, value.employment, value.projects, value.preferred_role, value.preferred_locations, value.employment_type, value.work_mode, value.certifications, value.portfolio_links, value.languages, value.accomplishments, value.city, value.state];
+  const completed = checks.filter((item) => Array.isArray(item) ? item.length > 0 : typeof item === "string" ? item.trim().length > 0 : Boolean(item)).length;
+  return Math.round(completed / checks.length * 100);
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return (parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1][0]}` : (parts[0] ?? "K").slice(0, 2)).toUpperCase();
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -138,7 +170,99 @@ function App() {
   const [saveError, setSaveError] = useState("");
   const [showSavedJobs, setShowSavedJobs] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showApplied, setShowApplied] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [themeChoice, setThemeChoice] = useState<ThemeChoice>(() => getThemeChoice("kaam-calm-theme:anonymous"));
+  const [themeStorageReady, setThemeStorageReady] = useState(false);
+  const [systemDark, setSystemDark] = useState(false);
+  const [profileName, setProfileName] = useState("");
+  const [profileCompletion, setProfileCompletion] = useState<number | null>(null);
+  const [profileSummaryError, setProfileSummaryError] = useState(false);
   const activeRequestRef = useRef<AbortController | null>(null);
+
+  const themeKey = `kaam-calm-theme:${session?.user.id ?? "anonymous"}`;
+  const activeView: DashboardView = showProfile ? "profile" : showApplied ? "applied" : showNotifications ? "notifications" : "home";
+  const resolvedTheme = themeChoice === "system" ? (systemDark ? "dark" : "light") : themeChoice;
+
+  useEffect(() => {
+    setThemeStorageReady(false);
+    setThemeChoice(getThemeChoice(themeKey));
+    setThemeStorageReady(true);
+  }, [themeKey]);
+
+  useEffect(() => {
+    if (!themeStorageReady) return;
+    try { window.localStorage.setItem(themeKey, themeChoice); } catch { /* Browser storage may be disabled. */ }
+  }, [themeChoice, themeKey, themeStorageReady]);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const updatePreference = () => setSystemDark(query.matches);
+    updatePreference();
+    query.addEventListener?.("change", updatePreference);
+    return () => query.removeEventListener?.("change", updatePreference);
+  }, []);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const drawer = document.querySelector<HTMLElement>(".navigation-drawer");
+    drawer?.querySelector<HTMLElement>("button, a")?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setMenuOpen(false); return; }
+      if (event.key !== "Tab" || !drawer) return;
+      const focusable = [...drawer.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) return;
+      const first = focusable[0]; const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => { document.removeEventListener("keydown", onKeyDown); previousFocus?.focus(); };
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (!session?.user.id || !supabase) {
+      setProfileName(session?.user.email?.split("@")[0] ?? "");
+      setProfileCompletion(null);
+      setProfileSummaryError(false);
+      return;
+    }
+    let current = true;
+    setProfileSummaryError(false);
+    void (async () => {
+      try {
+        const { data, error: queryError } = await supabase.from("job_seeker_profiles").select("full_name,location,headline,summary,skills,education,employment,projects,preferred_role,preferred_locations,employment_type,work_mode,certifications,portfolio_links,languages,accomplishments,city,state").eq("user_id", session.user.id).maybeSingle();
+        if (queryError) throw queryError;
+        if (!current) return;
+        setProfileName(typeof data?.full_name === "string" && data.full_name ? data.full_name : session.user.email?.split("@")[0] ?? "");
+        setProfileCompletion(data ? profileProgress(data as Record<string, unknown>) : 0);
+      } catch {
+        if (current) { setProfileSummaryError(true); setProfileCompletion(null); }
+      }
+    })();
+    return () => { current = false; };
+  }, [session?.user.id]);
+
+  const navigate = (view: DashboardView) => {
+    setMenuOpen(false);
+    setSelectedJob(null);
+    setShowSavedJobs(false);
+    setShowProfile(view === "profile");
+    setShowApplied(view === "applied");
+    setShowNotifications(view === "notifications");
+    if ((view === "profile" || view === "applied") && !session) {
+      openAuth("sign_in", "Sign in to view your personal dashboard.");
+      setShowProfile(false);
+      setShowApplied(false);
+      setShowNotifications(false);
+    }
+    if (view === "home") {
+      window.setTimeout(() => document.getElementById("home")?.scrollIntoView({ behavior: "smooth" }), 0);
+    }
+  };
 
   useEffect(() => () => activeRequestRef.current?.abort(), []);
 
@@ -158,6 +282,9 @@ function App() {
         if (event === "SIGNED_OUT") {
           setShowSavedJobs(false);
           setShowProfile(false);
+          setShowApplied(false);
+          setShowNotifications(false);
+          setMenuOpen(false);
           setAccountNotice("Your session ended. Sign in again to access saved jobs.");
         } else {
           setAccountNotice("");
@@ -395,6 +522,8 @@ function App() {
     setSelectedJob(null);
     setShowSavedJobs(false);
     setShowProfile(false);
+    setShowApplied(false);
+    setShowNotifications(false);
     setSearched(true);
     setLoading(true);
     setLoadingMore(false);
@@ -513,12 +642,13 @@ function App() {
   };
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" data-theme={resolvedTheme}>
       <header className="navbar">
+        <button className="menu-trigger" type="button" aria-label="Open navigation menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><Menu size={22} /></button>
         <a
           className="brand"
           href="#home"
-          onClick={() => setSelectedJob(null)}
+          onClick={() => navigate("home")}
         >
           <span className="brand-mark">k.</span>
           <span>
@@ -527,7 +657,7 @@ function App() {
         </a>
 
         <nav className="nav-links">
-          <a href="#jobs" onClick={() => setSelectedJob(null)}>
+          <a href="#jobs" onClick={() => navigate("home")}>
             Explore jobs
           </a>
           <a href="#how-it-works" onClick={() => setSelectedJob(null)}>
@@ -536,10 +666,11 @@ function App() {
           <a href="#for-recruiters" onClick={() => setSelectedJob(null)}>
             For recruiters
           </a>
-          {session && <button className="nav-profile-link" type="button" onClick={() => { setShowProfile(true); setShowSavedJobs(false); setSelectedJob(null); }} aria-current={showProfile ? "page" : undefined}>My Profile</button>}
+          {session && <button className="nav-profile-link" type="button" onClick={() => navigate("profile")} aria-current={showProfile ? "page" : undefined}>My Profile</button>}
         </nav>
 
         <div className="nav-actions">
+          <button className="notification-trigger" type="button" aria-label="Notifications" onClick={() => navigate("notifications")}><Bell size={19} /></button>
           {authLoading ? (
             <button className="button button-ghost" type="button" disabled>
               Loading account...
@@ -551,6 +682,8 @@ function App() {
                 type="button"
                 onClick={() => {
                   setShowProfile(false);
+                  setShowApplied(false);
+                  setShowNotifications(false);
                   setShowSavedJobs((current) => !current);
                   setSelectedJob(null);
                   setSaveError("");
@@ -589,10 +722,34 @@ function App() {
       </header>
       {accountNotice && <p className="account-notice" role="status">{accountNotice}</p>}
 
+      {menuOpen && <div className="drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setMenuOpen(false); }}>
+        <aside className="navigation-drawer" role="dialog" aria-modal="true" aria-label="Main navigation">
+          <div className="drawer-heading"><a className="brand" href="#home" onClick={() => navigate("home")}><span className="brand-mark">k.</span><span>kaam<span className="brand-dash">-</span>calm</span></a><button type="button" className="icon-button" aria-label="Close navigation menu" onClick={() => setMenuOpen(false)}><X size={20} /></button></div>
+          <div className="drawer-account"><span className="avatar-circle">{initials(profileName || session?.user.email || "Kaam Calm")}</span><div><strong>{profileName || (session ? "Your account" : "Welcome")}</strong><small>{session ? (profileCompletion === null ? "Profile details unavailable" : `${profileCompletion}% profile complete`) : "Sign in to access your profile"}</small></div></div>
+          <nav className="drawer-links" aria-label="Dashboard sections">
+            <button type="button" onClick={() => navigate("profile")}><UserRound size={18} /> Update Profile</button>
+            <button type="button" onClick={() => navigate("home")}><Search size={18} /> Search Jobs</button>
+            <button type="button" onClick={() => { navigate("home"); document.getElementById("jobs")?.scrollIntoView({ behavior: "smooth" }); }}><Sparkles size={18} /> Recommended Jobs</button>
+            <button type="button" onClick={() => navigate("applied")}><FileText size={18} /> Applied Jobs</button>
+            <button type="button" onClick={() => { if (!session) { setMenuOpen(false); openAuth("sign_in", "Sign in to view your saved jobs."); return; } navigate("home"); setShowSavedJobs(true); }}><Bookmark size={18} /> Saved Jobs <span>{savedJobs.length}</span></button>
+            <button type="button" onClick={() => navigate("profile")}><SlidersHorizontal size={18} /> Profile Performance</button>
+            <div className="drawer-theme" id="drawer-theme"><strong>Display Preferences</strong><div role="group" aria-label="Display preferences">{(["light", "dark", "system"] as const).map((mode) => <button type="button" aria-pressed={themeChoice === mode} key={mode} onClick={() => setThemeChoice(mode)}>{mode === "system" ? "System" : mode[0].toUpperCase() + mode.slice(1)}</button>)}</div></div>
+            <button type="button" onClick={() => document.getElementById("drawer-theme")?.scrollIntoView({ behavior: "smooth" })}><Settings size={18} /> Settings</button>
+            <button type="button" onClick={() => { setMenuOpen(false); document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" }); }}><CircleHelp size={18} /> Help & Support</button>
+          </nav>
+        </aside>
+      </div>}
+
       {showProfile && session ? (
-        <ProfileDashboard userId={session.user.id} email={session.user.email} />
+        <ProfileDashboard userId={session.user.id} email={session.user.email} onProfileChange={(name, completion) => { if (name) setProfileName(name); setProfileCompletion(completion); }} />
+      ) : showApplied ? (
+        <section className="dashboard-empty-page"><span className="dashboard-icon"><FileText size={27} /></span><span className="section-kicker">APPLICATION TRACKING</span><h1>Applied Jobs</h1><p>Kaam-Calm currently opens applications on the employer’s website and does not receive application confirmations or status updates.</p><p className="dashboard-muted">No application records are available yet. We’ll only show applications here when application tracking is supported by real data.</p><button type="button" className="button button-primary" onClick={() => navigate("home")}>Explore jobs <ArrowRight size={16} /></button></section>
+      ) : showNotifications ? (
+        <section className="dashboard-empty-page"><span className="dashboard-icon"><Bell size={27} /></span><span className="section-kicker">YOUR UPDATES</span><h1>Notifications</h1><p>There are no notifications to show.</p><p className="dashboard-muted">Job alerts and application updates are not available because the project has no notification source configured.</p></section>
       ) : (
       <>
+
+      {session && !showSavedJobs && <section className="home-dashboard-summary" aria-label="Your job search dashboard"><div className="summary-welcome"><span className="section-kicker">YOUR JOB SEARCH DASHBOARD</span><h2>Welcome back, {profileName || "job seeker"}</h2><p>Keep your goals close and your next opportunity in view.</p></div><div className="summary-stat"><strong>{savedJobs.length}</strong><span>Saved jobs</span></div><div className="summary-stat"><strong>{profileCompletion === null ? "—" : `${profileCompletion}%`}</strong><span>Profile completion</span></div><div className="summary-stat"><strong>Not tracked</strong><span>Applications</span></div>{profileSummaryError && <small role="status">Profile statistics unavailable until profile storage is set up.</small>}</section>}
 
       <section className="hero" id="home">
         <div className="hero-orb orb-one" />
@@ -1242,6 +1399,12 @@ function App() {
       </footer>
       </>
       )}
+
+      <nav className="mobile-bottom-nav" aria-label="Primary mobile navigation">
+        <button type="button" onClick={() => navigate("home")} aria-current={activeView === "home" ? "page" : undefined}><House size={20} /><span>Home</span></button>
+        <button type="button" onClick={() => navigate("applied")} aria-current={activeView === "applied" ? "page" : undefined}><FileText size={20} /><span>Applied</span></button>
+        <button type="button" onClick={() => navigate("profile")} aria-current={activeView === "profile" ? "page" : undefined}><UserRound size={20} /><span>Profile</span></button>
+      </nav>
 
       {authOpen && (
         <div className="auth-overlay">
