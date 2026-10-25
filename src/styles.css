@@ -481,6 +481,28 @@ a:focus-visible {
   font-size: 10px;
 }
 
+.filter-tag-button {
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: #667087;
+  background: #fff;
+  font-size: 10px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+
+.filter-tag-button:hover {
+  border-color: #d8d0ff;
+  color: var(--purple);
+}
+
+.filter-tag-button.active {
+  border-color: var(--purple);
+  color: #fff;
+  background: var(--purple);
+}
+
 .filter-note {
   display: flex;
   align-items: flex-start;
