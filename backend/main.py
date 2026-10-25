@@ -1,6 +1,4 @@
-
 import os
-from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -42,17 +40,20 @@ async def search_jobs(
 
     url = (
         f"https://api.adzuna.com/v1/api/jobs/in/search/{page}"
-        f"?app_id={quote(APP_ID)}"
-        f"&app_key={quote(APP_KEY)}"
-        f"&results_per_page=20"
-        f"&what={quote(role)}"
-        f"&where={quote(location)}"
-        f"&content-type=application/json"
     )
+
+    params = {
+        "app_id": APP_ID,
+        "app_key": APP_KEY,
+        "results_per_page": 20,
+        "what": role,
+        "where": location,
+        "content-type": "application/json",
+    }
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(url)
+            response = await client.get(url, params=params)
 
         if response.status_code != 200:
             raise HTTPException(
@@ -64,15 +65,40 @@ async def search_jobs(
         jobs = []
 
         for item in data.get("results", []):
+            salary_min = item.get("salary_min")
+            salary_max = item.get("salary_max")
+
+            salary = ""
+            if salary_min is not None and salary_max is not None:
+                salary = f"{salary_min:,.0f} - {salary_max:,.0f} per year"
+            elif salary_min is not None:
+                salary = f"From {salary_min:,.0f} per year"
+            elif salary_max is not None:
+                salary = f"Up to {salary_max:,.0f} per year"
+
+            contract_time = item.get("contract_time") or ""
+            contract_type = item.get("contract_type") or ""
+
+            job_type = contract_time or contract_type
+            job_type = job_type.replace("_", " ").strip().title()
+
             jobs.append({
                 "id": str(item.get("id", "")),
                 "title": item.get("title", "Untitled job"),
-                "company": item.get("company", {}).get("display_name", "Not specified"),
-                "location": item.get("location", {}).get("display_name", "Not specified"),
+                "company": item.get("company", {}).get(
+                    "display_name", "Not specified"
+                ),
+                "location": item.get("location", {}).get(
+                    "display_name", "Not specified"
+                ),
                 "description": item.get("description", ""),
                 "url": item.get("redirect_url", ""),
                 "source": "Adzuna",
                 "created": item.get("created", ""),
+                "type": job_type,
+                "experience": "",
+                "salary": salary,
+                "category": item.get("category", {}).get("label", ""),
             })
 
         return {
