@@ -19,21 +19,6 @@ import {
 
 const API_BASE_URL = "https://kaam-calm.onrender.com";
 
-const portals = [
-  {
-    name: "LinkedIn",
-    url: "https://www.linkedin.com/jobs/search/?keywords=",
-  },
-  { name: "Naukri", url: "https://www.naukri.com/" },
-  { name: "Indeed", url: "https://www.indeed.com/jobs?q=" },
-  {
-    name: "Glassdoor",
-    url: "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=",
-  },
-  { name: "Google Jobs", url: "https://www.google.com/search?q=" },
-  { name: "Unstop", url: "https://unstop.com/" },
-];
-
 type Job = {
   id: string;
   title: string;
@@ -62,84 +47,50 @@ function App() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
 
   const filteredJobs = jobs.filter((job) => {
-  const description = (job.description || "").toLowerCase();
-  const title = (job.title || "").toLowerCase();
-  const type = (job.type || "").toLowerCase();
+    const description = (job.description || "").toLowerCase();
+    const title = (job.title || "").toLowerCase();
+    const type = (job.type || "").toLowerCase();
+    const searchableText = `${title} ${description} ${type}`;
 
-  if (experience === "Fresher") {
-    const isFresher =
-      /fresher|entry.level|intern(ship)?|graduate|0\s*[-–]\s*1\s*year|no experience/.test(
-        `${title} ${description} ${type}`
-      );
+    if (experience === "Fresher") {
+      const fresherMatch =
+        /fresher|entry.level|intern(ship)?|graduate|0\s*[-–]\s*1\s*year|no experience|early career/.test(
+          searchableText
+        );
+      if (!fresherMatch) return false;
+    }
 
-    if (!isFresher) return false;
-  }
+    if (experience === "Experienced") {
+      const fresherOnly =
+        /fresher|entry.level|intern(ship)?|graduate|no experience|early career/.test(
+          searchableText
+        );
+      if (fresherOnly) return false;
+    }
 
-  if (experience === "Experienced") {
-    const isFresher =
-      /fresher|entry.level|intern(ship)?|graduate|no experience/.test(
-        `${title} ${description} ${type}`
-      );
-
-    if (isFresher) return false;
-  }
-
-  if (jobType === "Full-time") {
-    if (!/full.time|permanent/i.test(type)) return false;
-  }
-
-  if (jobType === "Remote") {
-    if (!/remote|work from home|work from anywhere/i.test(
-      `${title} ${description} ${type}`
-    )) return false;
-  }
-
-  if (jobType === "Internship") {
-    if (!/intern(ship)?/i.test(`${title} ${description} ${type}`)) {
+    if (jobType === "Full-time" && !/full[ -]?time|permanent/.test(searchableText)) {
       return false;
     }
-  }
 
-  return true;
-});
-
-  const searchText = [
-    role,
-    location,
-    experience !== "Any experience" ? experience : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  const openPortal = (portalName: string) => {
-    const query = encodeURIComponent(
-      [role || "jobs", location, experience !== "Any experience" ? experience : ""]
-        .filter(Boolean)
-        .join(" ")
-    );
-
-    const portal = portals.find((item) => item.name === portalName);
-    if (!portal) return;
-
-    let url = portal.url;
-
-    if (portalName === "Naukri") {
-      url = `https://www.naukri.com/${(role || "jobs")
-        .toLowerCase()
-        .trim()
-        .replace(/\s+/g, "-")}-jobs`;
-
-      if (location.trim()) {
-        url += `-in-${location.toLowerCase().trim().replace(/\s+/g, "-")}`;
-      }
-    } else if (portalName === "Unstop") {
-      url = `https://unstop.com/search?query=${query}`;
-    } else {
-      url += query;
+    if (jobType === "Part-time" && !/part[ -]?time/.test(searchableText)) {
+      return false;
     }
 
-    window.open(url, "_blank", "noopener,noreferrer");
-  };
+    if (
+      jobType === "Remote" &&
+      !/remote|work from home|work from anywhere|fully distributed|anywhere in india/.test(searchableText)
+    ) {
+      return false;
+    }
+
+    if (jobType === "Internship" && !/intern(ship)?|interns/.test(searchableText)) {
+      return false;
+    }
+
+    return true;
+  });
+
+
 
   const toggleSaved = (id: string) => {
     setSavedJobs((current) =>
@@ -388,8 +339,8 @@ function App() {
               {selectedJob
                 ? "Review the role details before applying."
                 : searched
-                  ? "Explore live listings and open more job searches across supported portals."
-                  : "Start with a search, then explore opportunities across supported portals."}
+                  ? "Explore live listings from the connected job source."
+                  : "Start with a search to discover live job opportunities."}
             </p>
           </div>
 
@@ -643,7 +594,7 @@ function App() {
 
               <div className="filter-label">Job type</div>
               <div className="filter-tags" role="group" aria-label="Filter jobs by type">
-                {["All types", "Full-time", "Remote", "Internship"].map((type) => (
+                {["All types", "Full-time", "Part-time", "Internship", "Remote"].map((type) => (
                   <button
                     key={type}
                     type="button"
@@ -690,20 +641,7 @@ function App() {
 
               {error && <p role="status">{error}</p>}
 
-              <div className="portal-grid">
-                {portals.map((portal) => (
-                  <button
-                    key={portal.name}
-                    type="button"
-                    className="portal-card"
-                    onClick={() => openPortal(portal.name)}
-                  >
-                    <Globe2 size={20} />
-                    <span>{portal.name}</span>
-                    <ExternalLink size={15} />
-                  </button>
-                ))}
-              </div>
+
 
               {!loading &&
                 filteredJobs.map((job, index) => (
@@ -829,7 +767,7 @@ function App() {
 
                   <p>
                     {searched
-                      ? "Try another role or location, or open one of the job portals above."
+                      ? "Try another role, location or filter to see more matching jobs."
                       : "Enter a role and location above to search live job listings."}
                   </p>
 
@@ -849,11 +787,6 @@ function App() {
                 </div>
               )}
 
-              <p className="sort-label">
-                {searchText
-                  ? `Portal searches use: ${searchText}`
-                  : "Enter a role and location to personalize portal searches."}
-              </p>
             </div>
           </div>
         )}
@@ -878,7 +811,7 @@ function App() {
             <Globe2 size={24} />
             <h3>Discover in one place</h3>
             <p>
-              Search live listings and open searches across supported portals.
+              Browse live job listings from our connected job source.
             </p>
           </article>
 
