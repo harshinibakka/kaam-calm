@@ -42,6 +42,9 @@ function App() {
   const [searched, setSearched] = useState(false);
   const [savedJobs, setSavedJobs] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
@@ -165,6 +168,8 @@ function App() {
       );
 
       setJobs(mappedJobs);
+      setCurrentPage(1);
+      setHasMore(mappedJobs.length >= 20);
 
       if (mappedJobs.length === 0) {
         setError("No jobs found. Try another role or location.");
@@ -178,12 +183,67 @@ function App() {
     }
   };
 
+  const loadMoreJobs = async () => {
+    if (loadingMore || !hasMore) return;
+
+    setLoadingMore(true);
+    setError("");
+    const nextPage = currentPage + 1;
+
+    try {
+      const params = new URLSearchParams({
+        role: role.trim() || "jobs",
+        location: location.trim() || "India",
+        page: String(nextPage),
+      });
+      const response = await fetch(`${API_BASE_URL}/api/jobs?${params.toString()}`);
+      if (!response.ok) throw new Error(`Job search failed (${response.status})`);
+
+      const data = await response.json();
+      const results: unknown[] = Array.isArray(data)
+        ? data
+        : Array.isArray(data.results)
+          ? data.results
+          : Array.isArray(data.jobs)
+            ? data.jobs
+            : [];
+      const mappedJobs: Job[] = results.map((item: any, index: number) => ({
+        id: String(item.id ?? item.url ?? `${item.title ?? "job"}-${nextPage}-${index}`),
+        title: item.title ?? "Untitled position",
+        company: item.company ?? "Company not specified",
+        location: item.location ?? "Location not specified",
+        description: item.description ?? "",
+        url: item.url ?? "",
+        source: item.source ?? "Job portal",
+        created: item.created ?? "",
+        type: item.type ?? "",
+        experience: item.experience ?? "",
+        skills: Array.isArray(item.skills) ? item.skills : [],
+        salary: item.salary ?? "",
+      }));
+
+      setJobs((current) => {
+        const existingIds = new Set(current.map((job) => job.id));
+        return [...current, ...mappedJobs.filter((job) => !existingIds.has(job.id))];
+      });
+      setCurrentPage(nextPage);
+      setHasMore(mappedJobs.length >= 20);
+      if (mappedJobs.length === 0) setHasMore(false);
+    } catch {
+      setError("Could not load more jobs. Please try again.");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   const resetSearch = () => {
     setRole("");
     setLocation("");
     setExperience("Any experience");
     setJobType("All types");
     setJobs([]);
+    setCurrentPage(1);
+    setHasMore(false);
     setSearched(false);
     setSelectedJob(null);
     setError("");
@@ -755,6 +815,20 @@ function App() {
                     </div>
                   </article>
                 ))}
+
+              {!loading && filteredJobs.length > 0 && hasMore && (
+                <div className="load-more-wrap">
+                  <button
+                    type="button"
+                    className="button button-primary load-more-button"
+                    onClick={loadMoreJobs}
+                    disabled={loadingMore}
+                  >
+                    {loadingMore ? "Loading more jobs..." : "Load more jobs"}
+                    {!loadingMore && <ArrowRight size={16} />}
+                  </button>
+                </div>
+              )}
 
               {!loading && filteredJobs.length === 0 && (
                 <div className="empty-state">
