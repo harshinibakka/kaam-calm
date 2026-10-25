@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { Session } from "@supabase/supabase-js";
+import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import {
   Search,
   MapPin,
@@ -141,39 +141,46 @@ function App() {
   useEffect(() => () => activeRequestRef.current?.abort(), []);
 
   useEffect(() => {
-    if (!supabase) {
+    const supabaseClient = supabase;
+    if (!supabaseClient) {
       setAuthLoading(false);
       return;
     }
 
     let mounted = true;
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      if (!mounted) return;
-      setSession(nextSession);
-      setAuthNotice("");
-      if (event === "SIGNED_OUT") {
-        setShowSavedJobs(false);
-        setAccountNotice("Your session ended. Sign in again to access saved jobs.");
-      } else {
-        setAccountNotice("");
+    const { data: { subscription } } = supabaseClient.auth.onAuthStateChange(
+      (event: AuthChangeEvent, nextSession: Session | null) => {
+        if (!mounted) return;
+        setSession(nextSession);
+        setAuthNotice("");
+        if (event === "SIGNED_OUT") {
+          setShowSavedJobs(false);
+          setAccountNotice("Your session ended. Sign in again to access saved jobs.");
+        } else {
+          setAccountNotice("");
+        }
       }
-    });
+    );
 
-    void supabase.auth.getSession().then(({ data, error: sessionError }) => {
-      if (!mounted) return;
-      if (sessionError) {
+    const restoreSession = async () => {
+      try {
+        const { data, error: sessionError } = await supabaseClient.auth.getSession();
+        if (!mounted) return;
+        if (sessionError) {
+          setSession(null);
+          setAccountNotice("Could not restore your session. Please sign in again.");
+        } else {
+          setSession(data.session);
+        }
+      } catch {
+        if (!mounted) return;
         setSession(null);
         setAccountNotice("Could not restore your session. Please sign in again.");
-      } else {
-        setSession(data.session);
+      } finally {
+        if (mounted) setAuthLoading(false);
       }
-      setAuthLoading(false);
-    }).catch(() => {
-      if (!mounted) return;
-      setSession(null);
-      setAccountNotice("Could not restore your session. Please sign in again.");
-      setAuthLoading(false);
-    });
+    };
+    void restoreSession();
 
     return () => {
       mounted = false;

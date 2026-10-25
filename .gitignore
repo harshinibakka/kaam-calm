@@ -223,3 +223,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Keep application source under src/lib; the generic lib/ rule above ignores
+# build artifacts named lib in other directories.
+!src/lib/
+!src/lib/**
