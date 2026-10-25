@@ -15,6 +15,7 @@
     "react": "latest",
     "react-dom": "latest",
     "lucide-react": "latest"
+    "@supabase/supabase-js": "latest"
   },
   "devDependencies": {
     "@types/react": "latest",
