@@ -151,8 +151,13 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
+node_modules/
+dist/
+*.tsbuildinfo
 env/
 venv/
 ENV/

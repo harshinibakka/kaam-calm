@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import type { Session } from "@supabase/supabase-js";
 import {
   Search,
   MapPin,
@@ -15,9 +16,12 @@ import {
   CalendarDays,
   Wallet,
   CheckCircle2,
+  X,
 } from "lucide-react";
+import { supabase, supabaseConfiguration } from "./lib/supabase";
 
-const API_BASE_URL = "https://kaam-calm.onrender.com";
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || "https://kaam-calm.onrender.com";
 
 type Job = {
   id: string;
@@ -34,13 +38,85 @@ type Job = {
   salary?: string;
 };
 
+type JobsResponse = {
+  jobs: unknown[];
+  has_more?: boolean;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readJobsResponse(value: unknown): JobsResponse {
+  if (!isRecord(value) || !Array.isArray(value.jobs)) {
+    throw new Error("Invalid jobs response");
+  }
+  return {
+    jobs: value.jobs,
+    has_more: typeof value.has_more === "boolean" ? value.has_more : undefined,
+  };
+}
+
+function textField(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function mapJob(value: unknown, index: number, page: number): Job {
+  if (!isRecord(value)) throw new Error("Invalid job record");
+  const title = textField(value.title, "Untitled position");
+  const url = textField(value.url);
+  const id =
+    value.id == null || value.id === ""
+      ? url || `${title}-${page}-${index}`
+      : String(value.id);
+  return {
+    id,
+    title,
+    company: textField(value.company, "Company not specified"),
+    location: textField(value.location, "Location not specified"),
+    description: textField(value.description),
+    url,
+    source: textField(value.source, "Job portal"),
+    created: textField(value.created),
+    type: textField(value.type),
+    experience: textField(value.experience),
+    skills: Array.isArray(value.skills)
+      ? value.skills.filter((skill): skill is string => typeof skill === "string")
+      : [],
+    salary: textField(value.salary),
+  };
+}
+
+function shouldLoadMore(response: JobsResponse, resultCount: number, page: number) {
+  return response.has_more ?? (page < 10 && resultCount >= 20);
+}
+
+function appendUniqueJobs(existing: Job[], incoming: Job[]) {
+  const seenIds = new Set(existing.map((job) => job.id));
+  const unique: Job[] = [];
+  for (const job of incoming) {
+    if (seenIds.has(job.id)) continue;
+    seenIds.add(job.id);
+    unique.push(job);
+  }
+  return [...existing, ...unique];
+}
+
+function mapSavedJob(value: unknown): Job {
+  if (!isRecord(value)) throw new Error("Invalid saved job record");
+  return mapJob({ ...value, id: value.job_id, created: value.job_created }, 0, 1);
+}
+
 function App() {
   const [role, setRole] = useState("");
   const [location, setLocation] = useState("");
   const [experience, setExperience] = useState("Any experience");
   const [jobType, setJobType] = useState("All types");
   const [searched, setSearched] = useState(false);
-  const [savedJobs, setSavedJobs] = useState<string[]>([]);
+  const [savedJobs, setSavedJobs] = useState<Job[]>([]);
+  const [savedJobsLoading, setSavedJobsLoading] = useState(false);
+  const [savedJobsError, setSavedJobsError] = useState("");
+  const [savingJobIds, setSavingJobIds] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
@@ -48,8 +124,102 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<"sign_in" | "sign_up">("sign_in");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
+  const [accountNotice, setAccountNotice] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [showSavedJobs, setShowSavedJobs] = useState(false);
+  const activeRequestRef = useRef<AbortController | null>(null);
 
-  const filteredJobs = jobs.filter((job) => {
+  useEffect(() => () => activeRequestRef.current?.abort(), []);
+
+  useEffect(() => {
+    if (!supabase) {
+      setAuthLoading(false);
+      return;
+    }
+
+    let mounted = true;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (!mounted) return;
+      setSession(nextSession);
+      setAuthNotice("");
+      if (event === "SIGNED_OUT") {
+        setShowSavedJobs(false);
+        setAccountNotice("Your session ended. Sign in again to access saved jobs.");
+      } else {
+        setAccountNotice("");
+      }
+    });
+
+    void supabase.auth.getSession().then(({ data, error: sessionError }) => {
+      if (!mounted) return;
+      if (sessionError) {
+        setSession(null);
+        setAccountNotice("Could not restore your session. Please sign in again.");
+      } else {
+        setSession(data.session);
+      }
+      setAuthLoading(false);
+    }).catch(() => {
+      if (!mounted) return;
+      setSession(null);
+      setAccountNotice("Could not restore your session. Please sign in again.");
+      setAuthLoading(false);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!supabase || !session?.user.id) {
+      setSavedJobs([]);
+      setSavedJobsLoading(false);
+      setSavedJobsError("");
+      return;
+    }
+
+    let current = true;
+    setSavedJobs([]);
+    setSavedJobsLoading(true);
+    setSavedJobsError("");
+    void (async () => {
+      try {
+        const { data, error: queryError } = await supabase
+          .from("saved_jobs")
+          .select("job_id,title,company,location,description,url,source,job_created,type,experience,skills,salary")
+          .eq("user_id", session.user.id)
+          .order("saved_at", { ascending: false });
+        if (!current) return;
+        if (queryError) throw queryError;
+        setSavedJobs((data ?? []).map(mapSavedJob));
+      } catch {
+        if (current) {
+          setSavedJobs([]);
+          setSavedJobsError("Could not load saved jobs. Please try again.");
+        }
+      } finally {
+        if (current) setSavedJobsLoading(false);
+      }
+    })();
+
+    return () => {
+      current = false;
+    };
+  }, [session?.user.id]);
+
+  const visibleJobs = showSavedJobs ? savedJobs : jobs;
+  const filteredJobs = visibleJobs.filter((job) => {
     const description = (job.description || "").toLowerCase();
     const title = (job.title || "").toLowerCase();
     const type = (job.type || "").toLowerCase();
@@ -95,12 +265,105 @@ function App() {
 
 
 
-  const toggleSaved = (id: string) => {
-    setSavedJobs((current) =>
-      current.includes(id)
-        ? current.filter((item) => item !== id)
-        : [...current, id]
-    );
+  const openAuth = (mode: "sign_in" | "sign_up", notice = "") => {
+    setAuthMode(mode);
+    setAuthError("");
+    setAuthNotice(notice);
+    setAuthOpen(true);
+  };
+
+  const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!supabase) {
+      setAuthError("Supabase is not configured. Add its URL and publishable key to your local environment.");
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthError("");
+    setAuthNotice("");
+    try {
+      const result = authMode === "sign_up"
+        ? await supabase.auth.signUp({ email: authEmail.trim(), password: authPassword })
+        : await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword });
+      if (result.error) throw result.error;
+
+      if (authMode === "sign_up" && !result.data.session) {
+        setAuthNotice("Check your email for a confirmation link before signing in.");
+        setAuthPassword("");
+      } else {
+        setAuthOpen(false);
+        setAuthPassword("");
+        setAccountNotice("");
+      }
+    } catch (authRequestError) {
+      setAuthError(
+        authRequestError instanceof Error
+          ? authRequestError.message
+          : "Authentication failed. Please try again."
+      );
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (!supabase) return;
+    setAuthBusy(true);
+    setAccountNotice("");
+    try {
+      const { error: signOutError } = await supabase.auth.signOut();
+      if (signOutError) throw signOutError;
+    } catch {
+      setAccountNotice("Could not sign out. Please try again.");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const toggleSaved = async (job: Job) => {
+    if (!session) {
+      openAuth("sign_in", "Sign in to save jobs to your account.");
+      return;
+    }
+    if (!supabase || savingJobIds.includes(job.id)) return;
+
+    const isSaved = savedJobs.some((savedJob) => savedJob.id === job.id);
+    setSavingJobIds((current) => [...current, job.id]);
+    setSaveError("");
+    try {
+      if (isSaved) {
+        const { error: deleteError } = await supabase
+          .from("saved_jobs")
+          .delete()
+          .eq("user_id", session.user.id)
+          .eq("job_id", job.id);
+        if (deleteError) throw deleteError;
+        setSavedJobs((current) => current.filter((savedJob) => savedJob.id !== job.id));
+      } else {
+        const { error: insertError } = await supabase.from("saved_jobs").insert({
+          user_id: session.user.id,
+          job_id: job.id,
+          title: job.title,
+          company: job.company,
+          location: job.location,
+          description: job.description,
+          url: job.url,
+          source: job.source,
+          job_created: job.created,
+          type: job.type ?? "",
+          experience: job.experience ?? "",
+          skills: job.skills ?? [],
+          salary: job.salary ?? "",
+        });
+        if (insertError) throw insertError;
+        setSavedJobs((current) => [job, ...current.filter((savedJob) => savedJob.id !== job.id)]);
+      }
+    } catch {
+      setSaveError("Could not update saved jobs. Please try again.");
+    } finally {
+      setSavingJobIds((current) => current.filter((id) => id !== job.id));
+    }
   };
 
   const runSearch = async (
@@ -108,6 +371,10 @@ function App() {
     searchRole?: string
   ) => {
     event?.preventDefault();
+    activeRequestRef.current?.abort();
+    const controller = new AbortController();
+    activeRequestRef.current = controller;
+    setShowSavedJobs(false);
 
     const requestedRole = searchRole ?? role;
 
@@ -116,8 +383,10 @@ function App() {
     }
 
     setSelectedJob(null);
+    setShowSavedJobs(false);
     setSearched(true);
     setLoading(true);
+    setLoadingMore(false);
     setError("");
     setJobs([]);
 
@@ -133,59 +402,41 @@ function App() {
       });
 
       const response = await fetch(
-        `${API_BASE_URL}/api/jobs?${params.toString()}`
+        `${API_BASE_URL}/api/jobs?${params.toString()}`,
+        { signal: controller.signal }
       );
 
       if (!response.ok) {
         throw new Error(`Job search failed (${response.status})`);
       }
 
-      const data = await response.json();
-
-      const results: unknown[] = Array.isArray(data)
-        ? data
-        : Array.isArray(data.results)
-          ? data.results
-          : Array.isArray(data.jobs)
-            ? data.jobs
-            : [];
-
-      const mappedJobs: Job[] = results.map(
-        (item: any, index: number) => ({
-          id: String(item.id ?? item.url ?? `${item.title ?? "job"}-${index}`),
-          title: item.title ?? "Untitled position",
-          company: item.company ?? "Company not specified",
-          location: item.location ?? "Location not specified",
-          description: item.description ?? "",
-          url: item.url ?? "",
-          source: item.source ?? "Job portal",
-          created: item.created ?? "",
-          type: item.type ?? "",
-          experience: item.experience ?? "",
-          skills: Array.isArray(item.skills) ? item.skills : [],
-          salary: item.salary ?? "",
-        })
-      );
+      const data = readJobsResponse(await response.json());
+      const mappedJobs = data.jobs.map((item, index) => mapJob(item, index, 1));
 
       setJobs(mappedJobs);
       setCurrentPage(1);
-      setHasMore(mappedJobs.length >= 20);
+      setHasMore(shouldLoadMore(data, mappedJobs.length, 1));
 
-      if (mappedJobs.length === 0) {
-        setError("No jobs found. Try another role or location.");
+    } catch (requestError) {
+      if (!(requestError instanceof Error && requestError.name === "AbortError")) {
+        setError(
+          "Could not load jobs. Please try again. If this continues, check the backend API."
+        );
       }
-    } catch {
-      setError(
-        "Could not load jobs. Please try again. If this continues, check the backend API."
-      );
     } finally {
-      setLoading(false);
+      if (activeRequestRef.current === controller) {
+        activeRequestRef.current = null;
+        setLoading(false);
+      }
     }
   };
 
   const loadMoreJobs = async () => {
     if (loadingMore || !hasMore) return;
 
+    activeRequestRef.current?.abort();
+    const controller = new AbortController();
+    activeRequestRef.current = controller;
     setLoadingMore(true);
     setError("");
     const nextPage = currentPage + 1;
@@ -196,52 +447,39 @@ function App() {
         location: location.trim() || "India",
         page: String(nextPage),
       });
-      const response = await fetch(`${API_BASE_URL}/api/jobs?${params.toString()}`);
+      const response = await fetch(`${API_BASE_URL}/api/jobs?${params.toString()}`, {
+        signal: controller.signal,
+      });
       if (!response.ok) throw new Error(`Job search failed (${response.status})`);
 
-      const data = await response.json();
-      const results: unknown[] = Array.isArray(data)
-        ? data
-        : Array.isArray(data.results)
-          ? data.results
-          : Array.isArray(data.jobs)
-            ? data.jobs
-            : [];
-      const mappedJobs: Job[] = results.map((item: any, index: number) => ({
-        id: String(item.id ?? item.url ?? `${item.title ?? "job"}-${nextPage}-${index}`),
-        title: item.title ?? "Untitled position",
-        company: item.company ?? "Company not specified",
-        location: item.location ?? "Location not specified",
-        description: item.description ?? "",
-        url: item.url ?? "",
-        source: item.source ?? "Job portal",
-        created: item.created ?? "",
-        type: item.type ?? "",
-        experience: item.experience ?? "",
-        skills: Array.isArray(item.skills) ? item.skills : [],
-        salary: item.salary ?? "",
-      }));
+      const data = readJobsResponse(await response.json());
+      const mappedJobs = data.jobs.map((item, index) => mapJob(item, index, nextPage));
 
-      setJobs((current) => {
-        const existingIds = new Set(current.map((job) => job.id));
-        return [...current, ...mappedJobs.filter((job) => !existingIds.has(job.id))];
-      });
+      setJobs((current) => appendUniqueJobs(current, mappedJobs));
       setCurrentPage(nextPage);
-      setHasMore(mappedJobs.length >= 20);
-      if (mappedJobs.length === 0) setHasMore(false);
-    } catch {
-      setError("Could not load more jobs. Please try again.");
+      setHasMore(shouldLoadMore(data, mappedJobs.length, nextPage));
+    } catch (requestError) {
+      if (!(requestError instanceof Error && requestError.name === "AbortError")) {
+        setError("Could not load more jobs. Please try again.");
+      }
     } finally {
-      setLoadingMore(false);
+      if (activeRequestRef.current === controller) {
+        activeRequestRef.current = null;
+        setLoadingMore(false);
+      }
     }
   };
 
   const resetSearch = () => {
+    activeRequestRef.current?.abort();
+    activeRequestRef.current = null;
     setRole("");
     setLocation("");
     setExperience("Any experience");
     setJobType("All types");
     setJobs([]);
+    setLoading(false);
+    setLoadingMore(false);
     setCurrentPage(1);
     setHasMore(false);
     setSearched(false);
@@ -290,14 +528,53 @@ function App() {
         </nav>
 
         <div className="nav-actions">
-          <a className="button button-ghost" href="#jobs">
-            Log in
-          </a>
-          <a className="button button-primary" href="#jobs">
-            Get started <ArrowRight size={16} />
-          </a>
+          {authLoading ? (
+            <button className="button button-ghost" type="button" disabled>
+              Loading account...
+            </button>
+          ) : session ? (
+            <>
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => {
+                  setShowSavedJobs((current) => !current);
+                  setSelectedJob(null);
+                  setSaveError("");
+                }}
+              >
+                {showSavedJobs ? "Search jobs" : `Saved jobs (${savedJobs.length})`}
+              </button>
+              <button
+                className="button button-primary"
+                type="button"
+                onClick={handleSignOut}
+                disabled={authBusy}
+              >
+                {authBusy ? "Signing out..." : "Sign out"}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => openAuth("sign_in")}
+              >
+                Log in
+              </button>
+              <button
+                className="button button-primary"
+                type="button"
+                onClick={() => openAuth("sign_up")}
+              >
+                Get started <ArrowRight size={16} />
+              </button>
+            </>
+          )}
         </div>
       </header>
+      {accountNotice && <p className="account-notice" role="status">{accountNotice}</p>}
 
       <section className="hero" id="home">
         <div className="hero-orb orb-one" />
@@ -391,6 +668,8 @@ function App() {
             <h2>
               {selectedJob
                 ? "Job details"
+                : showSavedJobs
+                  ? "Saved jobs"
                 : searched
                   ? "Your search results"
                   : "Explore opportunities"}
@@ -398,6 +677,8 @@ function App() {
             <p>
               {selectedJob
                 ? "Review the role details before applying."
+                : showSavedJobs
+                  ? "Jobs you saved to your account."
                 : searched
                   ? "Explore live listings from the connected job source."
                   : "Start with a search to discover live job opportunities."}
@@ -412,8 +693,8 @@ function App() {
                 onChange={(event) => setExperience(event.target.value)}
               >
                 <option>Any experience</option>
-                <option>Fresher</option>
-                <option>Experienced</option>
+                <option value="Fresher">Fresher (keyword match)</option>
+                <option value="Experienced">Experienced (keyword match)</option>
               </select>
               <ChevronDown size={15} />
             </label>
@@ -447,22 +728,25 @@ function App() {
                   type="button"
                   className="save-button"
                   aria-label={
-                    savedJobs.includes(selectedJob.id)
+                    savedJobs.some((job) => job.id === selectedJob.id)
                       ? "Unsave job"
                       : "Save job"
                   }
-                  onClick={() => toggleSaved(selectedJob.id)}
+                  onClick={() => void toggleSaved(selectedJob)}
+                  disabled={savingJobIds.includes(selectedJob.id)}
                 >
                   <Heart
                     size={21}
                     fill={
-                      savedJobs.includes(selectedJob.id)
+                      savedJobs.some((job) => job.id === selectedJob.id)
                         ? "currentColor"
                         : "none"
                     }
                   />
                 </button>
               </div>
+
+              {saveError && <p className="auth-error" role="status">{saveError}</p>}
 
               <div className="details-meta-grid">
                 <div className="details-meta-item">
@@ -638,7 +922,7 @@ function App() {
               <p>Find opportunities that fit your journey.</p>
 
               <label className="filter-label" htmlFor="experience-filter">
-                Experience level
+                Experience keyword filter
               </label>
 
               <select
@@ -648,8 +932,8 @@ function App() {
                 onChange={(event) => setExperience(event.target.value)}
               >
                 <option>Any experience</option>
-                <option>Fresher</option>
-                <option>Experienced</option>
+                <option value="Fresher">Fresher (keyword match)</option>
+                <option value="Experienced">Experienced (keyword match)</option>
               </select>
 
               <div className="filter-label">Job type</div>
@@ -669,7 +953,8 @@ function App() {
 
               <div className="filter-note">
                 <Sparkles size={16} />
-                More personalized filters are coming soon.
+                Filters apply to loaded listings. Experience uses text
+                keywords, not structured provider data.
               </div>
 
               <button
@@ -689,7 +974,7 @@ function App() {
                 </span>
 
                 <span className="sort-label">
-                  {jobs.length > 0
+                  {showSavedJobs ? "Saved jobs" : jobs.length > 0
                     ? "Live results · Adzuna"
                     : "Search to load live jobs"}
                 </span>
@@ -699,7 +984,13 @@ function App() {
                 <p role="status">Loading real job opportunities...</p>
               )}
 
+              {showSavedJobs && savedJobsLoading && (
+                <p role="status">Loading saved jobs...</p>
+              )}
+
               {error && <p role="status">{error}</p>}
+              {savedJobsError && <p role="status">{savedJobsError}</p>}
+              {saveError && <p role="status">{saveError}</p>}
 
 
 
@@ -728,16 +1019,17 @@ function App() {
                           type="button"
                           className="save-button"
                           aria-label={
-                            savedJobs.includes(job.id)
+                            savedJobs.some((savedJob) => savedJob.id === job.id)
                               ? `Unsave ${job.title}`
                               : `Save ${job.title}`
                           }
-                          onClick={() => toggleSaved(job.id)}
+                          onClick={() => void toggleSaved(job)}
+                          disabled={savingJobIds.includes(job.id)}
                         >
                           <Heart
                             size={18}
                             fill={
-                              savedJobs.includes(job.id)
+                              savedJobs.some((savedJob) => savedJob.id === job.id)
                                 ? "currentColor"
                                 : "none"
                             }
@@ -816,7 +1108,7 @@ function App() {
                   </article>
                 ))}
 
-              {!loading && filteredJobs.length > 0 && hasMore && (
+              {!showSavedJobs && !loading && filteredJobs.length > 0 && hasMore && (
                 <div className="load-more-wrap">
                   <button
                     type="button"
@@ -830,19 +1122,23 @@ function App() {
                 </div>
               )}
 
-              {!loading && filteredJobs.length === 0 && (
+              {!loading && !savedJobsLoading && !error && !savedJobsError && filteredJobs.length === 0 && (
                 <div className="empty-state">
                   <Search size={28} />
                   <h3>
-                    {searched
-                      ? "No matching jobs yet"
-                      : "Ready to find your next role?"}
+                    {showSavedJobs
+                      ? "No saved jobs yet"
+                      : searched
+                        ? "No matching jobs yet"
+                        : "Ready to find your next role?"}
                   </h3>
 
                   <p>
-                    {searched
-                      ? "Try another role, location or filter to see more matching jobs."
-                      : "Enter a role and location above to search live job listings."}
+                    {showSavedJobs
+                      ? "Save a job with the heart button and it will appear here."
+                      : searched
+                        ? "Try another role, location or filter to see more matching jobs."
+                        : "Enter a role and location above to search live job listings."}
                   </p>
 
                   {!searched && (
@@ -926,6 +1222,91 @@ function App() {
         <span>Your career. One calm search.</span>
         <span>Built to make job discovery simpler.</span>
       </footer>
+
+      {authOpen && (
+        <div className="auth-overlay">
+          <section
+            className="auth-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="auth-title"
+          >
+            <button
+              className="auth-close"
+              type="button"
+              aria-label="Close authentication"
+              onClick={() => setAuthOpen(false)}
+            >
+              <X size={19} />
+            </button>
+            <span className="section-kicker">KAAM-CALM ACCOUNT</span>
+            <h2 id="auth-title">
+              {authMode === "sign_in" ? "Welcome back" : "Create your account"}
+            </h2>
+            <p className="auth-description">
+              {authMode === "sign_in"
+                ? "Sign in to keep your saved jobs with you."
+                : "Create an account to save jobs across sessions."}
+            </p>
+
+            {authNotice && <p className="auth-notice" role="status">{authNotice}</p>}
+            {authError && <p className="auth-error" role="alert">{authError}</p>}
+
+            {supabaseConfiguration !== "configured" ? (
+              <p className="auth-error" role="alert">
+                {supabaseConfiguration === "invalid"
+                  ? "Supabase configuration is invalid. Check VITE_SUPABASE_URL and the publishable or anon key."
+                  : "Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY (or VITE_SUPABASE_ANON_KEY) in your local environment."}
+              </p>
+            ) : (
+              <form className="auth-form" onSubmit={handleAuthSubmit}>
+                <label>
+                  Email
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    value={authEmail}
+                    onChange={(event) => setAuthEmail(event.target.value)}
+                    required
+                  />
+                </label>
+                <label>
+                  Password
+                  <input
+                    type="password"
+                    autoComplete={authMode === "sign_in" ? "current-password" : "new-password"}
+                    minLength={6}
+                    value={authPassword}
+                    onChange={(event) => setAuthPassword(event.target.value)}
+                    required
+                  />
+                </label>
+                <button className="button button-primary auth-submit" type="submit" disabled={authBusy}>
+                  {authBusy
+                    ? "Please wait..."
+                    : authMode === "sign_in"
+                      ? "Log in"
+                      : "Create account"}
+                </button>
+              </form>
+            )}
+
+            <button
+              className="auth-mode-toggle"
+              type="button"
+              onClick={() => {
+                setAuthMode((mode) => mode === "sign_in" ? "sign_up" : "sign_in");
+                setAuthError("");
+                setAuthNotice("");
+              }}
+            >
+              {authMode === "sign_in"
+                ? "New to Kaam-Calm? Create an account"
+                : "Already have an account? Log in"}
+            </button>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

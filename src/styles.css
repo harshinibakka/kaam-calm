@@ -1317,3 +1317,131 @@ a:focus-visible {
 .load-more-wrap { display: flex; justify-content: center; padding: 18px 0 28px; }
 .load-more-button { min-width: 180px; justify-content: center; gap: 9px; }
 .load-more-button:disabled { opacity: .65; cursor: wait; }
+
+.account-notice {
+  margin: 0;
+  padding: 9px 7%;
+  color: #514486;
+  background: #f5f2ff;
+  text-align: right;
+  font-size: 12px;
+}
+
+.auth-overlay {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(24 20 44 / 55%);
+}
+
+.auth-card {
+  position: relative;
+  width: min(100%, 440px);
+  padding: 36px;
+  border: 1px solid #e9eaf2;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgb(21 17 42 / 24%);
+}
+
+.auth-card h2 {
+  margin: 10px 0 6px;
+  color: var(--ink);
+  font-size: 27px;
+}
+
+.auth-description {
+  margin: 0 0 22px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.auth-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  background: #f5f4f9;
+  cursor: pointer;
+}
+
+.auth-form {
+  display: grid;
+  gap: 16px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auth-form input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+}
+
+.auth-form input:focus {
+  outline: 2px solid #c7bafb;
+  border-color: var(--purple);
+}
+
+.auth-submit {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.auth-mode-toggle {
+  width: 100%;
+  margin-top: 19px;
+  padding: 4px;
+  border: 0;
+  color: var(--purple);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.auth-notice,
+.auth-error {
+  padding: 11px 13px;
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.auth-notice {
+  color: #3d3470;
+  background: #f3f0ff;
+}
+
+.auth-error {
+  color: #9a3042;
+  background: #fff0f1;
+}
+
+@media (max-width: 480px) {
+  .auth-card {
+    padding: 30px 23px;
+  }
+}
