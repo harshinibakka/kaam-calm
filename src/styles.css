@@ -1312,3 +1312,8 @@ a:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Load-more button */
+.load-more-wrap { display: flex; justify-content: center; padding: 18px 0 28px; }
+.load-more-button { min-width: 180px; justify-content: center; gap: 9px; }
+.load-more-button:disabled { opacity: .65; cursor: wait; }
