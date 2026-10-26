@@ -45,6 +45,7 @@ def test_root_health_endpoint():
     response = TestClient(main.app).get("/")
 
     assert response.status_code == 200
+    assert response.headers["x-api-processing-ms"].isdigit()
     assert response.json() == {"message": "Kaam-Calm API is running"}
 
 
@@ -78,6 +79,8 @@ def test_job_search_maps_provider_response_and_query(monkeypatch):
     )
 
     assert response.status_code == 200
+    assert response.headers["x-provider-latency-ms"].isdigit()
+    assert response.headers["x-api-processing-ms"].isdigit()
     body = response.json()
     assert body["count"] == 1
     assert body["total_count"] == 41

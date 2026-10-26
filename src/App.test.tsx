@@ -44,12 +44,19 @@ async function submitSearch(role = "Frontend Developer", location = "Bengaluru")
   await user.click(screen.getByRole("button", { name: "Find jobs" }));
 }
 
-function createSupabaseMock(initialSession: any = null, initialRows: any[] = []) {
+function createSupabaseMock(
+  initialSession: any = null,
+  initialRows: any[] = [],
+  options: { applicationRows?: any[]; failApplicationRead?: boolean; failApplicationWrite?: boolean } = {},
+) {
   let currentSession = initialSession;
   let authListener: ((event: string, session: any) => void) | null = null;
   const inserted: any[] = [];
+  const upserted: any[] = [];
+  const upsertOptions: any[] = [];
   const deleted: any[] = [];
   const rows = [...initialRows];
+  const applicationRows = [...(options.applicationRows ?? [])];
 
   const client = {
     auth: {
@@ -73,12 +80,14 @@ function createSupabaseMock(initialSession: any = null, initialRows: any[] = [])
         return { error: null };
       }),
     },
-    from: vi.fn(() => ({
+    from: vi.fn((tableName: string) => {
+      const tableRows = tableName === "job_seeker_applications" ? applicationRows : rows;
+      return ({
       select: vi.fn(() => ({
         eq: vi.fn((_column, userId) => ({
           order: vi.fn(async () => ({
-            data: rows.filter((row) => row.user_id === userId),
-            error: null,
+            data: tableRows.filter((row) => row.user_id === userId),
+            error: tableName === "job_seeker_applications" && options.failApplicationRead ? new Error("select denied") : null,
           })),
           maybeSingle: vi.fn(async () => ({ data: null, error: null })),
         })),
@@ -86,6 +95,14 @@ function createSupabaseMock(initialSession: any = null, initialRows: any[] = [])
       insert: vi.fn(async (row) => {
         inserted.push(row);
         rows.unshift(row);
+        return { error: null };
+      }),
+      upsert: vi.fn(async (row, upsertConfig) => {
+        upserted.push(row);
+        upsertOptions.push(upsertConfig);
+        if (tableName === "job_seeker_applications" && options.failApplicationWrite) return { error: new Error("insert denied") };
+        const index = tableRows.findIndex((item) => item.user_id === row.user_id && item.job_id === row.job_id);
+        if (index < 0) tableRows.unshift(row);
         return { error: null };
       }),
       delete: vi.fn(() => ({
@@ -105,10 +122,11 @@ function createSupabaseMock(initialSession: any = null, initialRows: any[] = [])
           }),
         })),
       })),
-    })),
+      });
+    }),
   };
 
-  return { client: client as any, inserted, deleted };
+  return { client: client as any, inserted, deleted, upserted, upsertOptions, applicationRows };
 }
 
 describe("job search flows", () => {
@@ -181,10 +199,121 @@ describe("job search flows", () => {
     await user.click(screen.getByRole("button", { name: "Applied Jobs" }));
     expect(await screen.findByRole("heading", { name: "Applied Jobs" })).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: "Main navigation" })).toBeNull();
-    expect(screen.getByText(/does not receive application confirmations/)).toBeTruthy();
+    expect(screen.getByText(/No applications tracked yet/)).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Notifications" }));
     expect(await screen.findByRole("heading", { name: "Notifications" })).toBeTruthy();
     expect(screen.getByText(/no notification source configured/)).toBeTruthy();
+  });
+
+  it("opens working Settings and Help screens from the navigation drawer", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open navigation menu" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Open navigation menu" }));
+    await user.click(screen.getByRole("button", { name: "Help & Support" }));
+    expect(await screen.findByRole("heading", { name: "How can we help?" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Main navigation" })).toBeNull();
+  });
+
+  it("records an application only after explicit confirmation and loads it in Applied Jobs", async () => {
+    const mock = createSupabaseMock({ user: { id: "user-1", email: "person@example.com" } });
+    supabaseMockState.client = mock.client;
+    supabaseMockState.configuration = "configured";
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ jobs: [job("a1", "Frontend Engineer")], count: 1, total_count: 1, has_more: false }));
+    const confirmation = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<App />);
+    await submitSearch();
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Frontend Engineer" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Mark as applied" }));
+    expect(mock.upserted).toHaveLength(0);
+    confirmation.mockReturnValue(true);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Mark as applied" }));
+    await waitFor(() => expect(mock.upserted).toHaveLength(1));
+    expect(mock.upserted[0]).toMatchObject({ user_id: "user-1", job_id: "a1", status: "applied" });
+    expect(mock.upsertOptions[0]).toMatchObject({ onConflict: "user_id,job_id", ignoreDuplicates: true });
+    expect(mock.client.from).toHaveBeenCalledWith("job_seeker_applications");
+    expect(screen.getByText("Applied", { selector: ".applied-badge" })).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Open navigation menu" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Applied Jobs" }));
+    expect(await screen.findByText("Frontend Engineer")).toBeTruthy();
+  });
+
+  it("loads a previously tracked application from the authenticated user's records", async () => {
+    const savedApplication = { user_id: "user-1", job_id: "persisted-1", title: "Saved Engineer", company: "Example Co", location: "Bengaluru", url: "https://jobs.example/persisted-1", source: "Adzuna", job_created: "", status: "applied", applied_at: "2026-10-25T10:00:00.000Z" };
+    const mock = createSupabaseMock({ user: { id: "user-1", email: "person@example.com" } }, [], { applicationRows: [savedApplication] });
+    supabaseMockState.client = mock.client;
+    supabaseMockState.configuration = "configured";
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Open navigation menu" }));
+    await user.click(screen.getByRole("button", { name: "Applied Jobs" }));
+    expect(await screen.findByText("Saved Engineer")).toBeTruthy();
+    expect(mock.client.from).toHaveBeenCalledWith("job_seeker_applications");
+    expect(mock.applicationRows).toHaveLength(1);
+  });
+
+  it("does not create a duplicate when the user's existing application is loaded", async () => {
+    const savedApplication = { user_id: "user-1", job_id: "a1", title: "Frontend Engineer", company: "Example Co", location: "Bengaluru", url: "https://jobs.example/a1", source: "Adzuna", job_created: "", status: "applied", applied_at: "2026-10-25T10:00:00.000Z" };
+    const mock = createSupabaseMock({ user: { id: "user-1", email: "person@example.com" } }, [], { applicationRows: [savedApplication] });
+    supabaseMockState.client = mock.client;
+    supabaseMockState.configuration = "configured";
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ jobs: [job("a1", "Frontend Engineer")], has_more: false }));
+    render(<App />);
+    await submitSearch();
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Frontend Engineer" }));
+    expect(screen.getByText("Applied", { selector: ".applied-badge" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Mark as applied" })).toBeNull();
+    expect(mock.upserted).toHaveLength(0);
+    expect(mock.applicationRows).toHaveLength(1);
+  });
+
+  it("asks signed-out users to sign in instead of creating an application", async () => {
+    render(<App />);
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ jobs: [job("a1", "Frontend Engineer")], has_more: false }));
+    await submitSearch();
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Frontend Engineer" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Mark as applied" }));
+    expect(await screen.findByRole("dialog", { name: "Welcome back" })).toBeTruthy();
+    expect(screen.getByText("Sign in to track an application.")).toBeTruthy();
+  });
+
+  it("keeps the application unmarked and shows an error when the insert fails", async () => {
+    const mock = createSupabaseMock({ user: { id: "user-1", email: "person@example.com" } }, [], { failApplicationWrite: true });
+    supabaseMockState.client = mock.client;
+    supabaseMockState.configuration = "configured";
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ jobs: [job("a1", "Frontend Engineer")], has_more: false }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    await submitSearch();
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Frontend Engineer" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Mark as applied" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not save your application confirmation");
+    expect(screen.queryByText("Applied", { selector: ".applied-badge" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Mark as applied" })).toBeTruthy();
+  });
+
+  it("does not show persisted Applied badges when application loading fails", async () => {
+    const mock = createSupabaseMock({ user: { id: "user-1", email: "person@example.com" } }, [], { applicationRows: [{ user_id: "user-1", job_id: "persisted-1", title: "Saved Engineer", company: "Example Co", location: "Bengaluru", url: "", source: "Adzuna", job_created: "", status: "applied", applied_at: "2026-10-25T10:00:00.000Z" }], failApplicationRead: true });
+    supabaseMockState.client = mock.client;
+    supabaseMockState.configuration = "configured";
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Open navigation menu" }));
+    await user.click(screen.getByRole("button", { name: "Applied Jobs" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not load your application records");
+    expect(screen.queryByText("Applied", { selector: ".applied-badge" })).toBeNull();
+  });
+
+  it("keeps search text readable in the selected dark theme", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open navigation menu" }));
+    await user.click(screen.getByRole("button", { name: "Dark" }));
+    const searchInput = screen.getByPlaceholderText("Job title or skill");
+    expect(searchInput.closest(".app-shell")?.getAttribute("data-theme")).toBe("dark");
+    expect(searchInput.closest(".search-field")).toBeTruthy();
   });
 
   it("sends role and location and maps the backend jobs response", async () => {
@@ -220,6 +349,28 @@ describe("job search flows", () => {
     resolveResponse(jsonResponse({ jobs: [], count: 0, total_count: 0, has_more: false }));
     expect(await screen.findByText("No matching jobs yet")).toBeTruthy();
     await waitFor(() => expect(screen.queryByText("Loading real job opportunities...")).toBeNull());
+  });
+
+  it("does not let a slower earlier search replace newer results", async () => {
+    let resolveFirst!: (response: Response) => void;
+    let resolveSecond!: (response: Response) => void;
+    vi.mocked(fetch)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveSecond = resolve; }));
+    render(<App />);
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText("Job title or skill"), "First role");
+    await user.type(screen.getByPlaceholderText("City or country"), "Bengaluru");
+    await user.click(screen.getByRole("button", { name: "Find jobs" }));
+    await user.clear(screen.getByPlaceholderText("Job title or skill"));
+    await user.type(screen.getByPlaceholderText("Job title or skill"), "Second role");
+    await user.click(screen.getByRole("button", { name: "Open navigation menu" }));
+    await user.click(screen.getByRole("button", { name: "Recommended Jobs" }));
+    resolveSecond(jsonResponse({ jobs: [job("new", "New result")], has_more: false }));
+    expect(await screen.findByRole("button", { name: "New result" })).toBeTruthy();
+    resolveFirst(jsonResponse({ jobs: [job("old", "Old result")], has_more: false }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Old result" })).toBeNull());
+    expect(screen.getByRole("button", { name: "New result" })).toBeTruthy();
   });
 
   it("shows a request error without presenting it as an empty search", async () => {

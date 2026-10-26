@@ -53,7 +53,8 @@ type JobsResponse = {
   has_more?: boolean;
 };
 
-type DashboardView = "home" | "applied" | "profile" | "notifications";
+type DashboardView = "home" | "applied" | "profile" | "notifications" | "settings" | "help";
+type ApplicationRecord = { job_id: string; title: string; company: string; location: string; url: string; source: string; job_created: string; status: "applied"; applied_at: string };
 type ThemeChoice = "light" | "dark" | "system";
 
 function getThemeChoice(key: string): ThemeChoice {
@@ -172,17 +173,24 @@ function App() {
   const [showProfile, setShowProfile] = useState(false);
   const [showApplied, setShowApplied] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [applications, setApplications] = useState<ApplicationRecord[]>([]);
+  const [applicationsLoading, setApplicationsLoading] = useState(false);
+  const [applicationsError, setApplicationsError] = useState("");
+  const [applicationBusy, setApplicationBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>(() => getThemeChoice("kaam-calm-theme:anonymous"));
   const [themeStorageReady, setThemeStorageReady] = useState(false);
   const [systemDark, setSystemDark] = useState(false);
   const [profileName, setProfileName] = useState("");
+  const [profilePreferredRole, setProfilePreferredRole] = useState("");
   const [profileCompletion, setProfileCompletion] = useState<number | null>(null);
   const [profileSummaryError, setProfileSummaryError] = useState(false);
   const activeRequestRef = useRef<AbortController | null>(null);
 
   const themeKey = `kaam-calm-theme:${session?.user.id ?? "anonymous"}`;
-  const activeView: DashboardView = showProfile ? "profile" : showApplied ? "applied" : showNotifications ? "notifications" : "home";
+  const activeView: DashboardView = showProfile ? "profile" : showApplied ? "applied" : showNotifications ? "notifications" : showSettings ? "settings" : showHelp ? "help" : "home";
   const resolvedTheme = themeChoice === "system" ? (systemDark ? "dark" : "light") : themeChoice;
 
   useEffect(() => {
@@ -226,11 +234,15 @@ function App() {
   useEffect(() => {
     if (!session?.user.id || !supabase) {
       setProfileName(session?.user.email?.split("@")[0] ?? "");
+      setProfilePreferredRole("");
       setProfileCompletion(null);
       setProfileSummaryError(false);
       return;
     }
     let current = true;
+    setProfileName(session.user.email?.split("@")[0] ?? "");
+    setProfilePreferredRole("");
+    setProfileCompletion(null);
     setProfileSummaryError(false);
     void (async () => {
       try {
@@ -238,6 +250,7 @@ function App() {
         if (queryError) throw queryError;
         if (!current) return;
         setProfileName(typeof data?.full_name === "string" && data.full_name ? data.full_name : session.user.email?.split("@")[0] ?? "");
+        setProfilePreferredRole(typeof data?.preferred_role === "string" ? data.preferred_role : "");
         setProfileCompletion(data ? profileProgress(data as Record<string, unknown>) : 0);
       } catch {
         if (current) { setProfileSummaryError(true); setProfileCompletion(null); }
@@ -253,11 +266,15 @@ function App() {
     setShowProfile(view === "profile");
     setShowApplied(view === "applied");
     setShowNotifications(view === "notifications");
+    setShowSettings(view === "settings");
+    setShowHelp(view === "help");
     if ((view === "profile" || view === "applied") && !session) {
       openAuth("sign_in", "Sign in to view your personal dashboard.");
       setShowProfile(false);
       setShowApplied(false);
       setShowNotifications(false);
+      setShowSettings(false);
+      setShowHelp(false);
     }
     if (view === "home") {
       window.setTimeout(() => document.getElementById("home")?.scrollIntoView({ behavior: "smooth" }), 0);
@@ -353,6 +370,20 @@ function App() {
     return () => {
       current = false;
     };
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    if (!supabase || !session?.user.id) { setApplications([]); setApplicationsLoading(false); setApplicationsError(""); return; }
+    let current = true;
+    setApplications([]);
+    setApplicationsLoading(true); setApplicationsError("");
+    void Promise.resolve(supabase.from("job_seeker_applications").select("job_id,title,company,location,url,source,job_created,status,applied_at").eq("user_id", session.user.id).order("applied_at", { ascending: false })).then(({ data, error: queryError }) => {
+      if (!current) return;
+      if (queryError) { setApplicationsError("Could not load your application records. Apply the latest database migration and try again."); setApplications([]); }
+      else setApplications((data ?? []) as ApplicationRecord[]);
+      setApplicationsLoading(false);
+    }).catch(() => { if (current) { setApplicationsError("Could not load your application records. Check your connection and database setup."); setApplications([]); setApplicationsLoading(false); } });
+    return () => { current = false; };
   }, [session?.user.id]);
 
   const visibleJobs = showSavedJobs ? savedJobs : jobs;
@@ -524,11 +555,14 @@ function App() {
     setShowProfile(false);
     setShowApplied(false);
     setShowNotifications(false);
+    setShowSettings(false);
+    setShowHelp(false);
     setSearched(true);
     setLoading(true);
     setLoadingMore(false);
     setError("");
     setJobs([]);
+    const timeoutId = window.setTimeout(() => controller.abort(new DOMException("Search timed out", "TimeoutError")), 35_000);
 
     document.getElementById("jobs")?.scrollIntoView({
       behavior: "smooth",
@@ -545,12 +579,14 @@ function App() {
         `${API_BASE_URL}/api/jobs?${params.toString()}`,
         { signal: controller.signal }
       );
+      if (controller.signal.aborted || activeRequestRef.current !== controller) return;
 
       if (!response.ok) {
         throw new Error(`Job search failed (${response.status})`);
       }
 
       const data = readJobsResponse(await response.json());
+      if (controller.signal.aborted || activeRequestRef.current !== controller) return;
       const mappedJobs = data.jobs.map((item, index) => mapJob(item, index, 1));
 
       setJobs(mappedJobs);
@@ -558,12 +594,13 @@ function App() {
       setHasMore(shouldLoadMore(data, mappedJobs.length, 1));
 
     } catch (requestError) {
-      if (!(requestError instanceof Error && requestError.name === "AbortError")) {
-        setError(
-          "Could not load jobs. Please try again. If this continues, check the backend API."
-        );
+      if (activeRequestRef.current === controller && controller.signal.aborted && controller.signal.reason?.name === "TimeoutError") {
+        setError("Job search took too long. Check your connection and retry.");
+      } else if (activeRequestRef.current === controller && !(requestError instanceof Error && requestError.name === "AbortError")) {
+        setError(requestError instanceof Error && requestError.message.startsWith("Job search failed (503)") ? "Job search is temporarily unavailable because the provider is not configured." : "Could not load jobs. Check your connection and retry.");
       }
     } finally {
+      window.clearTimeout(timeoutId);
       if (activeRequestRef.current === controller) {
         activeRequestRef.current = null;
         setLoading(false);
@@ -580,6 +617,7 @@ function App() {
     setLoadingMore(true);
     setError("");
     const nextPage = currentPage + 1;
+    const timeoutId = window.setTimeout(() => controller.abort(new DOMException("Search timed out", "TimeoutError")), 25_000);
 
     try {
       const params = new URLSearchParams({
@@ -590,24 +628,45 @@ function App() {
       const response = await fetch(`${API_BASE_URL}/api/jobs?${params.toString()}`, {
         signal: controller.signal,
       });
+      if (controller.signal.aborted || activeRequestRef.current !== controller) return;
       if (!response.ok) throw new Error(`Job search failed (${response.status})`);
 
       const data = readJobsResponse(await response.json());
+      if (controller.signal.aborted || activeRequestRef.current !== controller) return;
       const mappedJobs = data.jobs.map((item, index) => mapJob(item, index, nextPage));
 
       setJobs((current) => appendUniqueJobs(current, mappedJobs));
       setCurrentPage(nextPage);
       setHasMore(shouldLoadMore(data, mappedJobs.length, nextPage));
     } catch (requestError) {
-      if (!(requestError instanceof Error && requestError.name === "AbortError")) {
-        setError("Could not load more jobs. Please try again.");
+      if (activeRequestRef.current === controller && controller.signal.aborted && controller.signal.reason?.name === "TimeoutError") {
+        setError("Loading more jobs took too long. Please retry.");
+      } else if (activeRequestRef.current === controller && !(requestError instanceof Error && requestError.name === "AbortError")) {
+        setError("Could not load more jobs. Please retry.");
       }
     } finally {
+      window.clearTimeout(timeoutId);
       if (activeRequestRef.current === controller) {
         activeRequestRef.current = null;
         setLoadingMore(false);
       }
     }
+  };
+
+  const markApplied = async (job: Job) => {
+    if (!session) { openAuth("sign_in", "Sign in to track an application."); return; }
+    if (!supabase || applicationBusy) return;
+    if (!window.confirm("Have you submitted this application on the employer’s site? Kaam-Calm will record your confirmation; it will not submit the application.")) return;
+    setApplicationBusy(true); setApplicationsError("");
+    const appliedAt = new Date().toISOString();
+    try {
+      const { error: upsertError } = await supabase.from("job_seeker_applications").upsert({ user_id: session.user.id, job_id: job.id, title: job.title, company: job.company, location: job.location, url: job.url, source: job.source, job_created: job.created, status: "applied", applied_at: appliedAt }, { onConflict: "user_id,job_id", ignoreDuplicates: true });
+      if (upsertError) throw upsertError;
+      const row: ApplicationRecord = { job_id: job.id, title: job.title, company: job.company, location: job.location, url: job.url, source: job.source, job_created: job.created, status: "applied", applied_at: appliedAt };
+      setApplications((current) => [row, ...current.filter((item) => item.job_id !== job.id)]);
+    } catch {
+      setApplicationsError("Could not save your application confirmation. Please try again.");
+    } finally { setApplicationBusy(false); }
   };
 
   const resetSearch = () => {
@@ -678,7 +737,7 @@ function App() {
           ) : session ? (
             <>
               <button
-                className="button button-ghost"
+                className="button button-ghost nav-saved-link"
                 type="button"
                 onClick={() => {
                   setShowProfile(false);
@@ -729,13 +788,13 @@ function App() {
           <nav className="drawer-links" aria-label="Dashboard sections">
             <button type="button" onClick={() => navigate("profile")}><UserRound size={18} /> Update Profile</button>
             <button type="button" onClick={() => navigate("home")}><Search size={18} /> Search Jobs</button>
-            <button type="button" onClick={() => { navigate("home"); document.getElementById("jobs")?.scrollIntoView({ behavior: "smooth" }); }}><Sparkles size={18} /> Recommended Jobs</button>
+            <button type="button" onClick={() => { setMenuOpen(false); void runSearch(undefined, profilePreferredRole || role || "software developer"); }}><Sparkles size={18} /> Recommended Jobs</button>
             <button type="button" onClick={() => navigate("applied")}><FileText size={18} /> Applied Jobs</button>
             <button type="button" onClick={() => { if (!session) { setMenuOpen(false); openAuth("sign_in", "Sign in to view your saved jobs."); return; } navigate("home"); setShowSavedJobs(true); }}><Bookmark size={18} /> Saved Jobs <span>{savedJobs.length}</span></button>
-            <button type="button" onClick={() => navigate("profile")}><SlidersHorizontal size={18} /> Profile Performance</button>
+            <button type="button" onClick={() => { navigate("profile"); window.setTimeout(() => document.querySelector(".profile-completion")?.scrollIntoView({ behavior: "smooth", block: "center" }), 120); }}><SlidersHorizontal size={18} /> Profile Performance</button>
             <div className="drawer-theme" id="drawer-theme"><strong>Display Preferences</strong><div role="group" aria-label="Display preferences">{(["light", "dark", "system"] as const).map((mode) => <button type="button" aria-pressed={themeChoice === mode} key={mode} onClick={() => setThemeChoice(mode)}>{mode === "system" ? "System" : mode[0].toUpperCase() + mode.slice(1)}</button>)}</div></div>
-            <button type="button" onClick={() => document.getElementById("drawer-theme")?.scrollIntoView({ behavior: "smooth" })}><Settings size={18} /> Settings</button>
-            <button type="button" onClick={() => { setMenuOpen(false); document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" }); }}><CircleHelp size={18} /> Help & Support</button>
+            <button type="button" onClick={() => navigate("settings")}><Settings size={18} /> Settings</button>
+            <button type="button" onClick={() => navigate("help")}><CircleHelp size={18} /> Help &amp; Support</button>
           </nav>
         </aside>
       </div>}
@@ -743,13 +802,17 @@ function App() {
       {showProfile && session ? (
         <ProfileDashboard userId={session.user.id} email={session.user.email} onProfileChange={(name, completion) => { if (name) setProfileName(name); setProfileCompletion(completion); }} />
       ) : showApplied ? (
-        <section className="dashboard-empty-page"><span className="dashboard-icon"><FileText size={27} /></span><span className="section-kicker">APPLICATION TRACKING</span><h1>Applied Jobs</h1><p>Kaam-Calm currently opens applications on the employer’s website and does not receive application confirmations or status updates.</p><p className="dashboard-muted">No application records are available yet. We’ll only show applications here when application tracking is supported by real data.</p><button type="button" className="button button-primary" onClick={() => navigate("home")}>Explore jobs <ArrowRight size={16} /></button></section>
+        <section className="dashboard-empty-page applied-page"><span className="dashboard-icon"><FileText size={27} /></span><span className="section-kicker">APPLICATION TRACKING</span><h1>Applied Jobs</h1><p>Kaam-Calm records applications only after you confirm that you submitted them on the employer site.</p>{applicationsLoading ? <p role="status">Loading your application records...</p> : applicationsError ? <p role="alert">{applicationsError}</p> : applications.length ? <div className="application-list">{applications.map((application) => <article className="application-card" key={application.job_id}><div><strong>{application.title}</strong><p>{application.company} · {application.location}</p><small>Applied {new Date(application.applied_at).toLocaleDateString()}</small></div><span className="applied-badge"><CheckCircle2 size={16} /> Applied</span>{application.url && <a href={application.url} target="_blank" rel="noopener noreferrer">View listing <ExternalLink size={14} /></a>}</article>)}</div> : <><p className="dashboard-muted">No applications tracked yet. Open a job, apply on the employer site, then confirm it in Kaam-Calm.</p><button type="button" className="button button-primary" onClick={() => navigate("home")}>Explore jobs <ArrowRight size={16} /></button></>}</section>
       ) : showNotifications ? (
         <section className="dashboard-empty-page"><span className="dashboard-icon"><Bell size={27} /></span><span className="section-kicker">YOUR UPDATES</span><h1>Notifications</h1><p>There are no notifications to show.</p><p className="dashboard-muted">Job alerts and application updates are not available because the project has no notification source configured.</p></section>
+      ) : showSettings ? (
+        <section className="dashboard-empty-page settings-page"><span className="dashboard-icon"><Settings size={27} /></span><span className="section-kicker">PREFERENCES</span><h1>Settings</h1><p>Choose how Kaam-Calm looks on this device. Your choice is saved for your account in this browser.</p><div className="settings-options" role="group" aria-label="Display theme">{(["light", "dark", "system"] as const).map((mode) => <button type="button" aria-pressed={themeChoice === mode} key={mode} onClick={() => setThemeChoice(mode)}>{mode === "system" ? "System" : mode[0].toUpperCase() + mode.slice(1)}</button>)}</div><p className="dashboard-muted">Account, privacy, and notification controls are not available yet.</p></section>
+      ) : showHelp ? (
+        <section className="dashboard-empty-page help-page"><span className="dashboard-icon"><CircleHelp size={27} /></span><span className="section-kicker">HELP &amp; SUPPORT</span><h1>How can we help?</h1><p>Search jobs by role and location, save listings to revisit them, and open the original employer listing to apply.</p><p>After submitting on the employer’s site, use “Mark as applied” on the job details page to add it to your private Applied Jobs list.</p><p className="dashboard-muted">Direct support contact and help center are not configured yet. Profile and saved-job data remain tied to your signed-in account.</p><button type="button" className="button button-primary" onClick={() => navigate("home")}>Search jobs <ArrowRight size={16} /></button></section>
       ) : (
       <>
 
-      {session && !showSavedJobs && <section className="home-dashboard-summary" aria-label="Your job search dashboard"><div className="summary-welcome"><span className="section-kicker">YOUR JOB SEARCH DASHBOARD</span><h2>Welcome back, {profileName || "job seeker"}</h2><p>Keep your goals close and your next opportunity in view.</p></div><div className="summary-stat"><strong>{savedJobs.length}</strong><span>Saved jobs</span></div><div className="summary-stat"><strong>{profileCompletion === null ? "—" : `${profileCompletion}%`}</strong><span>Profile completion</span></div><div className="summary-stat"><strong>Not tracked</strong><span>Applications</span></div>{profileSummaryError && <small role="status">Profile statistics unavailable until profile storage is set up.</small>}</section>}
+      {session && !showSavedJobs && <section className="home-dashboard-summary" aria-label="Your job search dashboard"><div className="summary-welcome"><span className="section-kicker">YOUR JOB SEARCH DASHBOARD</span><h2>Welcome back, {profileName || "job seeker"}</h2><p>Keep your goals close and your next opportunity in view.</p></div><div className="summary-stat"><strong>{savedJobs.length}</strong><span>Saved jobs</span></div><div className="summary-stat"><strong>{profileCompletion === null ? "—" : `${profileCompletion}%`}</strong><span>Profile completion</span></div><div className="summary-stat"><strong>{applications.length}</strong><span>Applications tracked</span></div>{profileSummaryError && <small role="status">Could not load profile statistics. Check profile storage and your connection.</small>}</section>}
 
       <section className="hero" id="home">
         <div className="hero-orb orb-one" />
@@ -922,6 +985,7 @@ function App() {
               </div>
 
               {saveError && <p className="auth-error" role="status">{saveError}</p>}
+              {applicationsError && <p className="auth-error" role="alert">{applicationsError}</p>}
 
               <div className="details-meta-grid">
                 <div className="details-meta-item">
@@ -1069,6 +1133,7 @@ function App() {
                   <p>{selectedJob.source}</p>
                 </div>
 
+                <div className="application-actions">
                 {selectedJob.url ? (
                   <a
                     className="button button-primary apply-details-button"
@@ -1083,6 +1148,8 @@ function App() {
                     Application link unavailable
                   </span>
                 )}
+                {applications.some((application) => application.job_id === selectedJob.id) ? <span className="applied-badge"><CheckCircle2 size={16} /> Applied</span> : <button type="button" className="button button-ghost" disabled={applicationBusy} onClick={() => void markApplied(selectedJob)}>{applicationBusy ? "Saving..." : "Mark as applied"}</button>}
+                </div>
               </div>
             </article>
           </div>
@@ -1163,7 +1230,7 @@ function App() {
                 <p role="status">Loading saved jobs...</p>
               )}
 
-              {error && <p role="status">{error}</p>}
+              {error && <div className="search-error" role="alert"><p>{error}</p><button type="button" className="button button-ghost" onClick={() => { if (loadingMore) void loadMoreJobs(); else void runSearch(); }}>Retry</button></div>}
               {savedJobsError && <p role="status">{savedJobsError}</p>}
               {saveError && <p role="status">{saveError}</p>}
 
@@ -1373,7 +1440,7 @@ function App() {
 
       <section className="recruiter-section" id="for-recruiters">
         <div>
-          <span className="section-kicker">FOR HIRING TEAMS</span>
+            <span className="section-kicker">FOR HIRING TEAMS · COMING SOON</span>
           <h2>Good people deserve to find each other.</h2>
           <p>
             Recruiter tools and candidate management are planned for a later
@@ -1382,7 +1449,7 @@ function App() {
         </div>
 
         <a className="button button-light" href="#jobs">
-          Recruiter features <ArrowRight size={16} />
+          Coming soon <ArrowRight size={16} />
         </a>
       </section>
 

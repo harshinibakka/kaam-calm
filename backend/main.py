@@ -1,8 +1,9 @@
 import math
 import os
+import time
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Kaam-Calm Job Search API")
@@ -24,7 +25,16 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET"],
     allow_headers=["*"],
+    expose_headers=["X-Provider-Latency-Ms", "X-API-Processing-Ms"],
 )
+
+
+@app.middleware("http")
+async def add_processing_time_header(request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    response.headers["X-API-Processing-Ms"] = str(round((time.perf_counter() - started) * 1000))
+    return response
 
 APP_ID = os.getenv("ADZUNA_APP_ID")
 APP_KEY = os.getenv("ADZUNA_APP_KEY")
@@ -52,6 +62,7 @@ def home():
 
 @app.get("/api/jobs")
 async def search_jobs(
+    api_response: Response,
     role: str = Query(default="software developer", min_length=1),
     location: str = Query(default="India", min_length=1),
     page: int = Query(default=1, ge=1, le=10),
@@ -73,22 +84,25 @@ async def search_jobs(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(url, params=params)
+        provider_started = time.perf_counter()
+        timeout = httpx.Timeout(18.0, connect=4.0, read=15.0, write=5.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            provider_response = await client.get(url, params=params)
     except httpx.RequestError:
         raise HTTPException(
             status_code=502,
             detail="Could not connect to the job provider.",
         )
 
-    if response.status_code != 200:
+    api_response.headers["X-Provider-Latency-Ms"] = str(round((time.perf_counter() - provider_started) * 1000))
+    if provider_response.status_code != 200:
         raise HTTPException(
             status_code=502,
             detail="The job provider could not complete the search.",
         )
 
     try:
-        data = response.json()
+        data = provider_response.json()
     except ValueError:
         raise HTTPException(
             status_code=502,

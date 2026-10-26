@@ -1,0 +1,3 @@
+-- Reserved for the existing recruiter/application-submission table public.job_applications.
+-- Job-seeker tracking is created separately by 202610260002_job_seeker_applications.sql.
+-- Do not alter or repurpose public.job_applications here.
