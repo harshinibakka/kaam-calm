@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import {
   Search,
@@ -7,9 +7,9 @@ import {
   Globe2,
   ArrowRight,
   Sparkles,
+  Target,
   Building2,
   Clock3,
-  ChevronDown,
   Heart,
   ExternalLink,
   ArrowLeft,
@@ -26,12 +26,20 @@ import {
   SlidersHorizontal,
   Settings,
   CircleHelp,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { supabase, supabaseConfiguration } from "./lib/supabase";
 import ProfileDashboard from "./components/ProfileDashboard";
+import SettingsDashboard from "./components/SettingsDashboard";
+import CareerAssistant from "./components/CareerAssistant";
+import SmartJobMatching, { type SmartMatchCareerProfile } from "./components/SmartJobMatching";
+import { PROFILE_PHOTO_BUCKET, PROFILE_PHOTO_SIGNED_URL_TTL_SECONDS } from "./lib/profilePhotos";
+import { rankRecommendedJobs } from "./lib/recommendations";
+import { createAssistantConversationStore } from "./lib/assistantConversations";
+import { apiConfiguration } from "./lib/apiConfig";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "https://kaam-calm.onrender.com";
+const API_BASE_URL = apiConfiguration.baseUrl;
 
 type Job = {
   id: string;
@@ -46,6 +54,7 @@ type Job = {
   experience?: string;
   skills?: string[];
   salary?: string;
+  page?: number;
 };
 
 type JobsResponse = {
@@ -53,7 +62,7 @@ type JobsResponse = {
   has_more?: boolean;
 };
 
-type DashboardView = "home" | "applied" | "profile" | "notifications" | "settings" | "help";
+type DashboardView = "home" | "applied" | "ai-career" | "profile" | "notifications" | "settings" | "help";
 type ApplicationRecord = { job_id: string; title: string; company: string; location: string; url: string; source: string; job_created: string; status: "applied"; applied_at: string };
 type ThemeChoice = "light" | "dark" | "system";
 
@@ -67,7 +76,7 @@ function getThemeChoice(key: string): ThemeChoice {
 }
 
 function profileProgress(value: Record<string, unknown>): number {
-  const checks = [value.full_name, value.location, value.headline, value.summary, value.skills, value.education, value.employment, value.projects, value.preferred_role, value.preferred_locations, value.employment_type, value.work_mode, value.certifications, value.portfolio_links, value.languages, value.accomplishments, value.city, value.state];
+  const checks = [value.full_name, value.location, value.headline, value.summary, value.skills, value.education, value.projects, value.preferred_role, value.preferred_locations, value.employment_type, value.work_mode, value.certifications, value.portfolio_links, value.languages, value.accomplishments, value.city, value.state];
   const completed = checks.filter((item) => Array.isArray(item) ? item.length > 0 : typeof item === "string" ? item.trim().length > 0 : Boolean(item)).length;
   return Math.round(completed / checks.length * 100);
 }
@@ -95,6 +104,25 @@ function textField(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
 
+function applicationLoadMessage(error: unknown): string {
+  const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+  if (["PGRST205", "42P01"].includes(code)) return `Application tracking table is unavailable (${code}). Confirm that public.job_seeker_applications exists and that 202610260002_job_seeker_applications.sql was applied to the test project; if it exists, ask Supabase to refresh the API schema cache, then retry.`;
+  if (["PGRST204", "42703"].includes(code)) return `Application tracking columns do not match the frontend (${code}). Compare public.job_seeker_applications with 202610260002_job_seeker_applications.sql, then retry.`;
+  if (code === "42501") return "Supabase denied access to your application records (42501). Check the authenticated table grants and owner-scoped RLS policies.";
+  if (code === "PGRST301" || code === "401") return `Your sign-in session could not access application tracking (${code}). Sign in again, then retry.`;
+  return code ? `Could not load your application records (database error ${code}). Check the test project's table, grants, RLS, and connection, then retry.` : "Could not load your application records. Check the test project's migration, permissions, and connection, then retry.";
+}
+
+function savedJobsDatabaseMessage(error: unknown, action: "load" | "save"): string {
+  const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+  if (["PGRST205", "42P01"].includes(code)) return `Saved Jobs table is unavailable (${code}). Confirm that public.saved_jobs exists and that 202610250001_saved_jobs.sql was applied to the test project; if it exists, ask Supabase to refresh the API schema cache, then retry.`;
+  if (["PGRST204", "42703"].includes(code)) return `Saved Jobs columns do not match the frontend (${code}). Compare public.saved_jobs with 202610250001_saved_jobs.sql.`;
+  if (code === "42501") return `Supabase denied this Saved Jobs request (42501). Check authenticated table grants and owner-scoped RLS policies.`;
+  if (code === "PGRST301" || code === "401") return `Your sign-in session could not access Saved Jobs (${code}). Sign in again, then retry.`;
+  if (code) return `Could not ${action === "load" ? "load" : "update"} Saved Jobs (database error ${code}). Check the test project's table, permissions, and connection, then retry.`;
+  return action === "load" ? "Could not load Saved Jobs. Check the test project's migration, permissions, and connection, then retry." : "Could not update Saved Jobs. Check the test project's permissions and connection, then retry.";
+}
+
 function mapJob(value: unknown, index: number, page: number): Job {
   if (!isRecord(value)) throw new Error("Invalid job record");
   const title = textField(value.title, "Untitled position");
@@ -118,6 +146,30 @@ function mapJob(value: unknown, index: number, page: number): Job {
       ? value.skills.filter((skill): skill is string => typeof skill === "string")
       : [],
     salary: textField(value.salary),
+    page,
+  };
+}
+
+function cappedText(value: unknown, maxLength: number): string {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+function mapSmartMatchCareerProfile(value: unknown): SmartMatchCareerProfile {
+  if (!isRecord(value)) return { skills: [], preferred_roles: [], preferred_locations: [], experience: [], work_preferences: [] };
+  const strings = (input: unknown, count: number, length: number) => Array.isArray(input)
+    ? input.filter((item): item is string => typeof item === "string").map((item) => item.trim().slice(0, length)).filter(Boolean).slice(0, count)
+    : [];
+  const experience = Array.isArray(value.employment) ? value.employment.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const role = cappedText(item.role, 100);
+    return role ? [{ role, duration: cappedText(item.total_experience, 50) }] : [];
+  }).slice(0, 5) : [];
+  return {
+    skills: strings(value.skills, 20, 80),
+    preferred_roles: strings(Array.isArray(value.preferred_roles) && value.preferred_roles.length ? value.preferred_roles : [value.preferred_role], 3, 100),
+    preferred_locations: strings(value.preferred_locations, 5, 100),
+    experience,
+    work_preferences: [cappedText(value.employment_type, 50), cappedText(value.work_mode, 50)].filter(Boolean),
   };
 }
 
@@ -150,6 +202,7 @@ function App() {
   const [savedJobs, setSavedJobs] = useState<Job[]>([]);
   const [savedJobsLoading, setSavedJobsLoading] = useState(false);
   const [savedJobsError, setSavedJobsError] = useState("");
+  const [savedJobsReload, setSavedJobsReload] = useState(0);
   const [savingJobIds, setSavingJobIds] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
@@ -165,6 +218,7 @@ function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [accountNotice, setAccountNotice] = useState("");
@@ -172,26 +226,51 @@ function App() {
   const [showSavedJobs, setShowSavedJobs] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [showApplied, setShowApplied] = useState(false);
+  const [showAICareer, setShowAICareer] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
   const [applications, setApplications] = useState<ApplicationRecord[]>([]);
   const [applicationsLoading, setApplicationsLoading] = useState(false);
   const [applicationsError, setApplicationsError] = useState("");
+  const [applicationsLoadError, setApplicationsLoadError] = useState("");
+  const [applicationsReload, setApplicationsReload] = useState(0);
   const [applicationBusy, setApplicationBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>(() => getThemeChoice("kaam-calm-theme:anonymous"));
   const [themeStorageReady, setThemeStorageReady] = useState(false);
   const [systemDark, setSystemDark] = useState(false);
   const [profileName, setProfileName] = useState("");
+  const [greetingName, setGreetingName] = useState("");
+  const [profileAvatarPath, setProfileAvatarPath] = useState("");
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState("");
   const [profilePreferredRole, setProfilePreferredRole] = useState("");
+  const [profilePreferredRoles, setProfilePreferredRoles] = useState<string[]>([]);
+  const [profilePreferredLocations, setProfilePreferredLocations] = useState<string[]>([]);
+  const [profileExpectedSalary, setProfileExpectedSalary] = useState("");
+  const [matchCareerProfile, setMatchCareerProfile] = useState<SmartMatchCareerProfile>({ skills: [], preferred_roles: [], preferred_locations: [], experience: [], work_preferences: [] });
+  const [matchSearchContext, setMatchSearchContext] = useState({ role: "", location: "" });
+  const [recommendationMode, setRecommendationMode] = useState(false);
   const [profileCompletion, setProfileCompletion] = useState<number | null>(null);
   const [profileSummaryError, setProfileSummaryError] = useState(false);
   const activeRequestRef = useRef<AbortController | null>(null);
 
   const themeKey = `kaam-calm-theme:${session?.user.id ?? "anonymous"}`;
-  const activeView: DashboardView = showProfile ? "profile" : showApplied ? "applied" : showNotifications ? "notifications" : showSettings ? "settings" : showHelp ? "help" : "home";
+  const assistantConversationStore = useMemo(
+    () => supabase ? createAssistantConversationStore(supabase) : null,
+    [session?.user.id],
+  );
+  const activeView: DashboardView = showAICareer ? "ai-career" : showProfile ? "profile" : showApplied ? "applied" : showNotifications ? "notifications" : showSettings ? "settings" : showHelp ? "help" : "home";
   const resolvedTheme = themeChoice === "system" ? (systemDark ? "dark" : "light") : themeChoice;
+
+  const handlePreferencesSaved = useCallback((preferences: { roles: string[]; locations: string[]; salary: string }) => {
+    setProfilePreferredRoles(preferences.roles);
+    setProfilePreferredRole(preferences.roles[0] ?? "");
+    setProfilePreferredLocations(preferences.locations);
+    setProfileExpectedSalary(preferences.salary);
+    setMatchCareerProfile((current) => ({ ...current, preferred_roles: preferences.roles.slice(0, 3), preferred_locations: preferences.locations.slice(0, 5) }));
+  }, []);
 
   useEffect(() => {
     setThemeStorageReady(false);
@@ -234,23 +313,44 @@ function App() {
   useEffect(() => {
     if (!session?.user.id || !supabase) {
       setProfileName(session?.user.email?.split("@")[0] ?? "");
+      setGreetingName("");
+      setProfileAvatarPath("");
       setProfilePreferredRole("");
+      setProfilePreferredRoles([]); setProfilePreferredLocations([]); setProfileExpectedSalary("");
+      setMatchCareerProfile({ skills: [], preferred_roles: [], preferred_locations: [], experience: [], work_preferences: [] });
+      setMatchSearchContext({ role: "", location: "" });
       setProfileCompletion(null);
       setProfileSummaryError(false);
       return;
     }
     let current = true;
     setProfileName(session.user.email?.split("@")[0] ?? "");
+    setGreetingName("");
+    setProfileAvatarPath("");
     setProfilePreferredRole("");
+    setProfilePreferredRoles([]); setProfilePreferredLocations([]); setProfileExpectedSalary("");
+    setMatchCareerProfile({ skills: [], preferred_roles: [], preferred_locations: [], experience: [], work_preferences: [] });
     setProfileCompletion(null);
     setProfileSummaryError(false);
     void (async () => {
       try {
-        const { data, error: queryError } = await supabase.from("job_seeker_profiles").select("full_name,location,headline,summary,skills,education,employment,projects,preferred_role,preferred_locations,employment_type,work_mode,certifications,portfolio_links,languages,accomplishments,city,state").eq("user_id", session.user.id).maybeSingle();
+        const { data, error: queryError } = await supabase.from("job_seeker_profiles").select("full_name,first_name,middle_name,last_name,avatar_path,location,headline,summary,skills,education,employment,projects,preferred_role,preferred_roles,preferred_locations,expected_salary,employment_type,work_mode,certifications,portfolio_links,languages,accomplishments,city,state").eq("user_id", session.user.id).maybeSingle();
         if (queryError) throw queryError;
         if (!current) return;
-        setProfileName(typeof data?.full_name === "string" && data.full_name ? data.full_name : session.user.email?.split("@")[0] ?? "");
-        setProfilePreferredRole(typeof data?.preferred_role === "string" ? data.preferred_role : "");
+        const nameParts = [data?.first_name, data?.middle_name, data?.last_name].filter((part): part is string => typeof part === "string" && Boolean(part.trim())).map((part) => part.trim());
+        setProfileName(nameParts.length ? nameParts.join(" ") : typeof data?.full_name === "string" && data.full_name ? data.full_name : session.user.email?.split("@")[0] ?? "");
+        const savedFirst = typeof data?.first_name === "string" ? data.first_name.trim() : "";
+        const savedLast = typeof data?.last_name === "string" ? data.last_name.trim() : "";
+        const legacyParts = typeof data?.full_name === "string" ? data.full_name.trim().split(/\s+/).filter(Boolean) : [];
+        setGreetingName([savedFirst || legacyParts[0], savedLast || (legacyParts.length > 1 ? legacyParts[legacyParts.length - 1] : "")].filter(Boolean).join(" "));
+        setProfileAvatarPath(typeof data?.avatar_path === "string" ? data.avatar_path : "");
+        const roles = Array.isArray(data?.preferred_roles) ? data.preferred_roles.filter((item: unknown): item is string => typeof item === "string") : [];
+        if (!roles.length && typeof data?.preferred_role === "string" && data.preferred_role.trim()) roles.push(data.preferred_role.trim());
+        setProfilePreferredRoles(roles.slice(0, 3));
+        setProfilePreferredRole(roles[0] ?? "");
+        setProfilePreferredLocations(Array.isArray(data?.preferred_locations) ? data.preferred_locations.filter((item: unknown): item is string => typeof item === "string").slice(0, 10) : []);
+        setMatchCareerProfile(mapSmartMatchCareerProfile(data));
+        setProfileExpectedSalary(typeof data?.expected_salary === "string" ? data.expected_salary : "");
         setProfileCompletion(data ? profileProgress(data as Record<string, unknown>) : 0);
       } catch {
         if (current) { setProfileSummaryError(true); setProfileCompletion(null); }
@@ -259,26 +359,56 @@ function App() {
     return () => { current = false; };
   }, [session?.user.id]);
 
+  useEffect(() => {
+    let active = true;
+    let refreshTimer = 0;
+    setProfileAvatarUrl("");
+    if (!supabase || !profileAvatarPath) return () => { active = false; };
+    const storageClient = supabase;
+    const refresh = async () => {
+      try {
+        const { data, error } = await storageClient.storage.from(PROFILE_PHOTO_BUCKET).createSignedUrl(profileAvatarPath, PROFILE_PHOTO_SIGNED_URL_TTL_SECONDS);
+        if (!active) return;
+        if (!error) setProfileAvatarUrl(data?.signedUrl ?? "");
+        refreshTimer = window.setTimeout(() => void refresh(), (PROFILE_PHOTO_SIGNED_URL_TTL_SECONDS - 300) * 1000);
+      } catch { if (active) setProfileAvatarUrl(""); }
+    };
+    void refresh();
+    return () => { active = false; window.clearTimeout(refreshTimer); };
+  }, [profileAvatarPath]);
+
   const navigate = (view: DashboardView) => {
     setMenuOpen(false);
     setSelectedJob(null);
     setShowSavedJobs(false);
     setShowProfile(view === "profile");
     setShowApplied(view === "applied");
+    setShowAICareer(view === "ai-career" && Boolean(session));
     setShowNotifications(view === "notifications");
     setShowSettings(view === "settings");
     setShowHelp(view === "help");
-    if ((view === "profile" || view === "applied") && !session) {
-      openAuth("sign_in", "Sign in to view your personal dashboard.");
+    if ((view === "profile" || view === "applied" || view === "settings" || view === "ai-career") && !session) {
+      openAuth("sign_in", view === "ai-career" ? "Sign in to use the AI Career workspace." : view === "settings" ? "Sign in to manage your account and preferences." : "Sign in to view your personal dashboard.");
       setShowProfile(false);
       setShowApplied(false);
+      setShowAICareer(false);
       setShowNotifications(false);
       setShowSettings(false);
       setShowHelp(false);
     }
     if (view === "home") {
-      window.setTimeout(() => document.getElementById("home")?.scrollIntoView({ behavior: "smooth" }), 0);
+      window.setTimeout(() => document.getElementById("job-search-form")?.scrollIntoView({ behavior: "smooth" }), 0);
     }
+  };
+
+  const showSavedJobsView = () => {
+    if (!session) { setMenuOpen(false); openAuth("sign_in", "Sign in to view your saved jobs."); return; }
+    navigate("home"); setShowSavedJobs(true);
+  };
+
+  const showProfilePerformance = () => {
+    navigate("profile");
+    window.setTimeout(() => document.querySelector(".profile-completion")?.scrollIntoView({ behavior: "smooth", block: "center" }), 120);
   };
 
   useEffect(() => () => activeRequestRef.current?.abort(), []);
@@ -296,11 +426,18 @@ function App() {
         if (!mounted) return;
         setSession(nextSession);
         setAuthNotice("");
+        if (event === "PASSWORD_RECOVERY") {
+          setPasswordRecovery(true);
+          setShowSettings(true);
+          setShowProfile(false); setShowApplied(false); setShowAICareer(false); setShowNotifications(false); setShowHelp(false); setShowSavedJobs(false);
+        }
         if (event === "SIGNED_OUT") {
           setShowSavedJobs(false);
           setShowProfile(false);
           setShowApplied(false);
+          setShowAICareer(false);
           setShowNotifications(false);
+          setPasswordRecovery(false);
           setMenuOpen(false);
           setAccountNotice("Your session ended. Sign in again to access saved jobs.");
         } else {
@@ -357,10 +494,10 @@ function App() {
         if (!current) return;
         if (queryError) throw queryError;
         setSavedJobs((data ?? []).map(mapSavedJob));
-      } catch {
+      } catch (queryErrorOrCaught) {
         if (current) {
           setSavedJobs([]);
-          setSavedJobsError("Could not load saved jobs. Please try again.");
+          setSavedJobsError(savedJobsDatabaseMessage(queryErrorOrCaught, "load"));
         }
       } finally {
         if (current) setSavedJobsLoading(false);
@@ -370,24 +507,24 @@ function App() {
     return () => {
       current = false;
     };
-  }, [session?.user.id]);
+  }, [session?.user.id, savedJobsReload]);
 
   useEffect(() => {
-    if (!supabase || !session?.user.id) { setApplications([]); setApplicationsLoading(false); setApplicationsError(""); return; }
+    if (!supabase || !session?.user.id) { setApplications([]); setApplicationsLoading(false); setApplicationsError(""); setApplicationsLoadError(""); return; }
     let current = true;
     setApplications([]);
-    setApplicationsLoading(true); setApplicationsError("");
+    setApplicationsLoading(true); setApplicationsLoadError("");
     void Promise.resolve(supabase.from("job_seeker_applications").select("job_id,title,company,location,url,source,job_created,status,applied_at").eq("user_id", session.user.id).order("applied_at", { ascending: false })).then(({ data, error: queryError }) => {
       if (!current) return;
-      if (queryError) { setApplicationsError("Could not load your application records. Apply the latest database migration and try again."); setApplications([]); }
+      if (queryError) { setApplicationsLoadError(applicationLoadMessage(queryError)); setApplications([]); }
       else setApplications((data ?? []) as ApplicationRecord[]);
       setApplicationsLoading(false);
-    }).catch(() => { if (current) { setApplicationsError("Could not load your application records. Check your connection and database setup."); setApplications([]); setApplicationsLoading(false); } });
+    }).catch((loadError) => { if (current) { setApplicationsLoadError(applicationLoadMessage(loadError)); setApplications([]); setApplicationsLoading(false); } });
     return () => { current = false; };
-  }, [session?.user.id]);
+  }, [session?.user.id, applicationsReload]);
 
   const visibleJobs = showSavedJobs ? savedJobs : jobs;
-  const filteredJobs = visibleJobs.filter((job) => {
+  const filteredJobsBase = visibleJobs.filter((job) => {
     const description = (job.description || "").toLowerCase();
     const title = (job.title || "").toLowerCase();
     const type = (job.type || "").toLowerCase();
@@ -430,11 +567,16 @@ function App() {
 
     return true;
   });
+  const parsedExpectedSalary = Number(profileExpectedSalary);
+  const filteredJobs = recommendationMode && !showSavedJobs
+    ? rankRecommendedJobs(filteredJobsBase, profilePreferredRoles, profilePreferredLocations, parsedExpectedSalary > 0 ? parsedExpectedSalary : null)
+    : filteredJobsBase;
 
 
 
   const openAuth = (mode: "sign_in" | "sign_up", notice = "") => {
     setAuthMode(mode);
+    setPasswordVisible(false);
     setAuthError("");
     setAuthNotice(notice);
     setAuthOpen(true);
@@ -461,6 +603,7 @@ function App() {
         setAuthPassword("");
       } else {
         setAuthOpen(false);
+        setPasswordVisible(false);
         setAuthPassword("");
         setAccountNotice("");
       }
@@ -527,8 +670,8 @@ function App() {
         if (insertError) throw insertError;
         setSavedJobs((current) => [job, ...current.filter((savedJob) => savedJob.id !== job.id)]);
       }
-    } catch {
-      setSaveError("Could not update saved jobs. Please try again.");
+    } catch (saveRequestError) {
+      setSaveError(savedJobsDatabaseMessage(saveRequestError, "save"));
     } finally {
       setSavingJobIds((current) => current.filter((id) => id !== job.id));
     }
@@ -536,15 +679,25 @@ function App() {
 
   const runSearch = async (
     event?: FormEvent<HTMLFormElement>,
-    searchRole?: string
+    searchRole?: string,
+    isRecommendation = false
   ) => {
     event?.preventDefault();
+    if (apiConfiguration.error) {
+      setError(apiConfiguration.error);
+      setSearched(true);
+      setLoading(false);
+      return;
+    }
     activeRequestRef.current?.abort();
     const controller = new AbortController();
     activeRequestRef.current = controller;
     setShowSavedJobs(false);
+    setRecommendationMode(isRecommendation);
 
     const requestedRole = searchRole ?? role;
+    const requestedLocation = (isRecommendation && profilePreferredLocations[0] ? profilePreferredLocations[0] : location).trim() || "India";
+    setMatchSearchContext({ role: requestedRole.trim() || "jobs", location: requestedLocation });
 
     if (searchRole !== undefined) {
       setRole(searchRole);
@@ -571,7 +724,7 @@ function App() {
     try {
       const params = new URLSearchParams({
         role: requestedRole.trim() || "jobs",
-        location: location.trim() || "India",
+        location: requestedLocation,
         page: "1",
       });
 
@@ -608,8 +761,15 @@ function App() {
     }
   };
 
+  const runRecommendedSearch = () => {
+    setMenuOpen(false);
+    const searchPreference = profilePreferredRoles[0] || profilePreferredRole || role || "software developer";
+    void runSearch(undefined, searchPreference, true);
+  };
+
   const loadMoreJobs = async () => {
     if (loadingMore || !hasMore) return;
+    if (apiConfiguration.error) { setError(apiConfiguration.error); return; }
 
     activeRequestRef.current?.abort();
     const controller = new AbortController();
@@ -621,8 +781,8 @@ function App() {
 
     try {
       const params = new URLSearchParams({
-        role: role.trim() || "jobs",
-        location: location.trim() || "India",
+        role: (recommendationMode ? matchSearchContext.role : role).trim() || "jobs",
+        location: (recommendationMode ? matchSearchContext.location : location).trim() || "India",
         page: String(nextPage),
       });
       const response = await fetch(`${API_BASE_URL}/api/jobs?${params.toString()}`, {
@@ -684,6 +844,7 @@ function App() {
     setSearched(false);
     setSelectedJob(null);
     setError("");
+    setRecommendationMode(false);
   };
 
   const openJobDetails = (job: Job) => {
@@ -715,19 +876,6 @@ function App() {
           </span>
         </a>
 
-        <nav className="nav-links">
-          <a href="#jobs" onClick={() => navigate("home")}>
-            Explore jobs
-          </a>
-          <a href="#how-it-works" onClick={() => setSelectedJob(null)}>
-            How it works
-          </a>
-          <a href="#for-recruiters" onClick={() => setSelectedJob(null)}>
-            For recruiters
-          </a>
-          {session && <button className="nav-profile-link" type="button" onClick={() => navigate("profile")} aria-current={showProfile ? "page" : undefined}>My Profile</button>}
-        </nav>
-
         <div className="nav-actions">
           <button className="notification-trigger" type="button" aria-label="Notifications" onClick={() => navigate("notifications")}><Bell size={19} /></button>
           {authLoading ? (
@@ -736,20 +884,6 @@ function App() {
             </button>
           ) : session ? (
             <>
-              <button
-                className="button button-ghost nav-saved-link"
-                type="button"
-                onClick={() => {
-                  setShowProfile(false);
-                  setShowApplied(false);
-                  setShowNotifications(false);
-                  setShowSavedJobs((current) => !current);
-                  setSelectedJob(null);
-                  setSaveError("");
-                }}
-              >
-                {showSavedJobs ? "Search jobs" : `Saved jobs (${savedJobs.length})`}
-              </button>
               <button
                 className="button button-primary"
                 type="button"
@@ -779,40 +913,54 @@ function App() {
           )}
         </div>
       </header>
+
       {accountNotice && <p className="account-notice" role="status">{accountNotice}</p>}
 
       {menuOpen && <div className="drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setMenuOpen(false); }}>
         <aside className="navigation-drawer" role="dialog" aria-modal="true" aria-label="Main navigation">
           <div className="drawer-heading"><a className="brand" href="#home" onClick={() => navigate("home")}><span className="brand-mark">k.</span><span>kaam<span className="brand-dash">-</span>calm</span></a><button type="button" className="icon-button" aria-label="Close navigation menu" onClick={() => setMenuOpen(false)}><X size={20} /></button></div>
-          <div className="drawer-account"><span className="avatar-circle">{initials(profileName || session?.user.email || "Kaam Calm")}</span><div><strong>{profileName || (session ? "Your account" : "Welcome")}</strong><small>{session ? (profileCompletion === null ? "Profile details unavailable" : `${profileCompletion}% profile complete`) : "Sign in to access your profile"}</small></div></div>
+          <div className="drawer-scroll-area" role="region" aria-label="Navigation options" tabIndex={0}>
+          <div className="drawer-account">{profileAvatarUrl ? <img className="avatar-circle" src={profileAvatarUrl} alt="" /> : <span className="avatar-circle">{initials(profileName || session?.user.email || "Kaam Calm")}</span>}<div><strong>{profileName || (session ? "Your account" : "Welcome")}</strong><small>{session ? (profileCompletion === null ? "Profile details unavailable" : `${profileCompletion}% profile complete`) : "Sign in to access your profile"}</small></div></div>
           <nav className="drawer-links" aria-label="Dashboard sections">
             <button type="button" onClick={() => navigate("profile")}><UserRound size={18} /> Update Profile</button>
             <button type="button" onClick={() => navigate("home")}><Search size={18} /> Search Jobs</button>
-            <button type="button" onClick={() => { setMenuOpen(false); void runSearch(undefined, profilePreferredRole || role || "software developer"); }}><Sparkles size={18} /> Recommended Jobs</button>
+            <button type="button" onClick={runRecommendedSearch}><Target size={18} /> Recommended Jobs</button>
             <button type="button" onClick={() => navigate("applied")}><FileText size={18} /> Applied Jobs</button>
-            <button type="button" onClick={() => { if (!session) { setMenuOpen(false); openAuth("sign_in", "Sign in to view your saved jobs."); return; } navigate("home"); setShowSavedJobs(true); }}><Bookmark size={18} /> Saved Jobs <span>{savedJobs.length}</span></button>
-            <button type="button" onClick={() => { navigate("profile"); window.setTimeout(() => document.querySelector(".profile-completion")?.scrollIntoView({ behavior: "smooth", block: "center" }), 120); }}><SlidersHorizontal size={18} /> Profile Performance</button>
+            <button type="button" onClick={showSavedJobsView}><Bookmark size={18} /> Saved Jobs <span>{savedJobs.length}</span></button>
+            <button type="button" onClick={showProfilePerformance}><SlidersHorizontal size={18} /> Profile Performance</button>
             <div className="drawer-theme" id="drawer-theme"><strong>Display Preferences</strong><div role="group" aria-label="Display preferences">{(["light", "dark", "system"] as const).map((mode) => <button type="button" aria-pressed={themeChoice === mode} key={mode} onClick={() => setThemeChoice(mode)}>{mode === "system" ? "System" : mode[0].toUpperCase() + mode.slice(1)}</button>)}</div></div>
             <button type="button" onClick={() => navigate("settings")}><Settings size={18} /> Settings</button>
             <button type="button" onClick={() => navigate("help")}><CircleHelp size={18} /> Help &amp; Support</button>
+            <button type="button" onClick={() => { setMenuOpen(false); navigate("home"); window.setTimeout(() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" }), 100); }}>How it works</button>
+            <button type="button" onClick={() => { setMenuOpen(false); navigate("home"); window.setTimeout(() => document.getElementById("for-recruiters")?.scrollIntoView({ behavior: "smooth" }), 100); }}>For recruiters</button>
           </nav>
+          </div>
         </aside>
       </div>}
 
       {showProfile && session ? (
-        <ProfileDashboard userId={session.user.id} email={session.user.email} onProfileChange={(name, completion) => { if (name) setProfileName(name); setProfileCompletion(completion); }} />
+        <ProfileDashboard userId={session.user.id} email={session.user.email} onProfileChange={(name, completion, avatarPath, greeting) => { if (name) setProfileName(name); setProfileCompletion(completion); if (avatarPath !== undefined) setProfileAvatarPath(avatarPath); if (greeting !== undefined) setGreetingName(greeting); }} />
       ) : showApplied ? (
-        <section className="dashboard-empty-page applied-page"><span className="dashboard-icon"><FileText size={27} /></span><span className="section-kicker">APPLICATION TRACKING</span><h1>Applied Jobs</h1><p>Kaam-Calm records applications only after you confirm that you submitted them on the employer site.</p>{applicationsLoading ? <p role="status">Loading your application records...</p> : applicationsError ? <p role="alert">{applicationsError}</p> : applications.length ? <div className="application-list">{applications.map((application) => <article className="application-card" key={application.job_id}><div><strong>{application.title}</strong><p>{application.company} · {application.location}</p><small>Applied {new Date(application.applied_at).toLocaleDateString()}</small></div><span className="applied-badge"><CheckCircle2 size={16} /> Applied</span>{application.url && <a href={application.url} target="_blank" rel="noopener noreferrer">View listing <ExternalLink size={14} /></a>}</article>)}</div> : <><p className="dashboard-muted">No applications tracked yet. Open a job, apply on the employer site, then confirm it in Kaam-Calm.</p><button type="button" className="button button-primary" onClick={() => navigate("home")}>Explore jobs <ArrowRight size={16} /></button></>}</section>
+        <section className="dashboard-empty-page applied-page"><span className="dashboard-icon"><FileText size={27} /></span><span className="section-kicker">APPLICATION TRACKING</span><h1>Applied Jobs</h1><p>Kaam-Calm records applications only after you confirm that you submitted them on the employer site.</p>{applicationsLoading ? <p role="status">Loading your application records...</p> : applicationsLoadError ? <div className="application-load-error"><p role="alert">{applicationsLoadError}</p><button type="button" className="button button-ghost" onClick={() => setApplicationsReload((value) => value + 1)}>Retry</button></div> : applications.length ? <div className="application-list">{applications.map((application) => <article className="application-card" key={application.job_id}><div><strong>{application.title}</strong><p>{application.company} · {application.location}</p><small>Applied {new Date(application.applied_at).toLocaleDateString()}</small></div><span className="applied-badge"><CheckCircle2 size={16} /> Applied</span>{application.url && <a href={application.url} target="_blank" rel="noopener noreferrer">View listing <ExternalLink size={14} /></a>}</article>)}</div> : <><p className="dashboard-muted">No applications tracked yet. Open a job, apply through the employer or provider, then confirm it in Kaam-Calm.</p><button type="button" className="button button-primary" onClick={() => navigate("home")}>Explore jobs <ArrowRight size={16} /></button></>}</section>
       ) : showNotifications ? (
         <section className="dashboard-empty-page"><span className="dashboard-icon"><Bell size={27} /></span><span className="section-kicker">YOUR UPDATES</span><h1>Notifications</h1><p>There are no notifications to show.</p><p className="dashboard-muted">Job alerts and application updates are not available because the project has no notification source configured.</p></section>
       ) : showSettings ? (
-        <section className="dashboard-empty-page settings-page"><span className="dashboard-icon"><Settings size={27} /></span><span className="section-kicker">PREFERENCES</span><h1>Settings</h1><p>Choose how Kaam-Calm looks on this device. Your choice is saved for your account in this browser.</p><div className="settings-options" role="group" aria-label="Display theme">{(["light", "dark", "system"] as const).map((mode) => <button type="button" aria-pressed={themeChoice === mode} key={mode} onClick={() => setThemeChoice(mode)}>{mode === "system" ? "System" : mode[0].toUpperCase() + mode.slice(1)}</button>)}</div><p className="dashboard-muted">Account, privacy, and notification controls are not available yet.</p></section>
+        session && <SettingsDashboard userId={session.user.id} email={session.user.email} recovery={passwordRecovery} onRecoveryComplete={() => setPasswordRecovery(false)} onPreferencesSaved={handlePreferencesSaved} />
       ) : showHelp ? (
-        <section className="dashboard-empty-page help-page"><span className="dashboard-icon"><CircleHelp size={27} /></span><span className="section-kicker">HELP &amp; SUPPORT</span><h1>How can we help?</h1><p>Search jobs by role and location, save listings to revisit them, and open the original employer listing to apply.</p><p>After submitting on the employer’s site, use “Mark as applied” on the job details page to add it to your private Applied Jobs list.</p><p className="dashboard-muted">Direct support contact and help center are not configured yet. Profile and saved-job data remain tied to your signed-in account.</p><button type="button" className="button button-primary" onClick={() => navigate("home")}>Search jobs <ArrowRight size={16} /></button></section>
+        <section className="dashboard-empty-page help-page">
+          <div className="help-intro"><span className="dashboard-icon"><CircleHelp size={27} /></span><span className="section-kicker">HELP &amp; SUPPORT</span><h1>Help with your job search</h1><p>Practical guidance for the features currently available in Kaam-Calm.</p></div>
+          <div className="help-section-grid">
+            <section className="help-card" aria-labelledby="help-search-heading"><h2 id="help-search-heading">Search and filter</h2><p>Enter a job title or skill and a location, then search. Refine loaded listings by experience keywords and job type. These filters use listing text; the provider does not supply structured experience data.</p><p>Listings are currently provided by Adzuna. Availability and listing details can change at the source.</p><button type="button" className="button button-primary" onClick={() => navigate("home")}>Search jobs <ArrowRight size={16} /></button></section>
+            <section className="help-card" aria-labelledby="help-listings-heading"><h2 id="help-listings-heading">Review and save listings</h2><p>Select a job title or View details to review the available description, employer, location, source, and link. Use the heart control to save or remove a listing from your account.</p><p>Saved Jobs are available when you sign in.</p></section>
+            <section className="help-card" aria-labelledby="help-applications-heading"><h2 id="help-applications-heading">Applying and tracking</h2><p>Kaam-Calm does not submit applications to employers. Apply through the original listing, then use “Mark as applied” to record your confirmation in Applied Jobs.</p><p>The Applied label means you confirmed the application; it is not confirmation from the employer.</p></section>
+            <section className="help-card" aria-labelledby="help-profile-heading"><h2 id="help-profile-heading">Profile and career preferences</h2><p>Update your name, skills, education, and optional employment history from your profile. Upload or replace a profile photo, resume, or CV there; private files open through temporary signed links.</p><p>Use Settings to edit preferred roles, locations, and annual salary. Recommendations prioritize available listings and are not guaranteed matches.</p></section>
+            <section className="help-card" aria-labelledby="help-contact-heading"><h2 id="help-contact-heading">Support</h2><p>A help desk, support email, and phone channel are not configured in this version. If a feature is unavailable, the page will explain the current limitation; no direct support contact is available in the app.</p></section>
+          </div>
+        </section>
       ) : (
-      <>
+      <div className="home-workspace" hidden={showAICareer}>
 
-      {session && !showSavedJobs && <section className="home-dashboard-summary" aria-label="Your job search dashboard"><div className="summary-welcome"><span className="section-kicker">YOUR JOB SEARCH DASHBOARD</span><h2>Welcome back, {profileName || "job seeker"}</h2><p>Keep your goals close and your next opportunity in view.</p></div><div className="summary-stat"><strong>{savedJobs.length}</strong><span>Saved jobs</span></div><div className="summary-stat"><strong>{profileCompletion === null ? "—" : `${profileCompletion}%`}</strong><span>Profile completion</span></div><div className="summary-stat"><strong>{applications.length}</strong><span>Applications tracked</span></div>{profileSummaryError && <small role="status">Could not load profile statistics. Check profile storage and your connection.</small>}</section>}
+      {session && !showSavedJobs && <section className="home-dashboard-summary" aria-label="Your job search dashboard"><div className="summary-welcome">{profileAvatarUrl ? <img className="summary-avatar" src={profileAvatarUrl} alt="" /> : <span className="summary-avatar summary-avatar-fallback" aria-hidden="true">{initials(profileName || session.user.email || "Kaam Calm")}</span>}<div><span className="section-kicker">YOUR JOB SEARCH DASHBOARD</span><h2>Welcome back, {greetingName || "job seeker"}.</h2><p>Keep your goals close and your next opportunity in view.</p></div></div><div className="summary-stat"><strong>{savedJobs.length}</strong><span>Saved jobs</span></div><div className="summary-stat"><strong>{profileCompletion === null ? "—" : `${profileCompletion}%`}</strong><span>Profile completion</span></div><div className="summary-stat"><strong>{applications.length}</strong><span>Applications tracked</span></div>{profileSummaryError && <small role="status">Could not load profile statistics. Check profile storage and your connection.</small>}</section>}
 
       <section className="hero" id="home">
         <div className="hero-orb orb-one" />
@@ -836,11 +984,12 @@ function App() {
 
           <div className="source-strip">
             <span className="source-dot" />
-            Multiple job sources <span className="source-divider">·</span>
-            Local and global opportunities
+            Listings via Adzuna <span className="source-divider">·</span>
+            Provider-sourced opportunities
           </div>
 
           <form
+            id="job-search-form"
             className="search-panel"
             onSubmit={(event) => runSearch(event)}
           >
@@ -918,25 +1067,11 @@ function App() {
                 : showSavedJobs
                   ? "Jobs you saved to your account."
                 : searched
-                  ? "Explore live listings from the connected job source."
+                  ? recommendationMode ? "Prioritized using your saved career preferences and the available provider data." : "Explore live listings from the connected job source."
                   : "Start with a search to discover live job opportunities."}
             </p>
           </div>
 
-          {!selectedJob && (
-            <label className="experience-select">
-              <BriefcaseBusiness size={16} />
-              <select
-                value={experience}
-                onChange={(event) => setExperience(event.target.value)}
-              >
-                <option>Any experience</option>
-                <option value="Fresher">Fresher (keyword match)</option>
-                <option value="Experienced">Experienced (keyword match)</option>
-              </select>
-              <ChevronDown size={15} />
-            </label>
-          )}
         </div>
 
         {selectedJob ? (
@@ -1216,11 +1351,31 @@ function App() {
                 </span>
 
                 <span className="sort-label">
-                  {showSavedJobs ? "Saved jobs" : jobs.length > 0
+                  {recommendationMode && !showSavedJobs ? "Recommendations · Adzuna" : showSavedJobs ? "Saved jobs" : jobs.length > 0
                     ? "Live results · Adzuna"
                     : "Search to load live jobs"}
                 </span>
               </div>
+
+              {recommendationMode && !showSavedJobs && <p className="recommendation-note">Recommendations prioritize your saved roles and locations. Salary is compared only when a listing includes annual salary data. These are suggestions, not guaranteed matches.</p>}
+
+              {recommendationMode && !showSavedJobs && !loading && filteredJobs.length > 0 && <SmartJobMatching
+                key={`${matchSearchContext.role}|${matchSearchContext.location}|${filteredJobs.slice(0, 5).map((job) => `${job.page}:${job.id}`).join(",")}`}
+                apiBaseUrl={API_BASE_URL}
+                apiConfigurationError={apiConfiguration.error}
+                jobs={filteredJobs.slice(0, 5).map(({ id, page, title, company }) => ({ id, page: page ?? 1, title, company }))}
+                role={matchSearchContext.role}
+                location={matchSearchContext.location}
+                careerProfile={matchCareerProfile}
+                isAuthenticated={Boolean(session?.user.id)}
+                getAccessToken={async () => {
+                  if (!supabase) return null;
+                  const { data, error: sessionError } = await supabase.auth.getSession();
+                  return sessionError ? null : data.session?.access_token ?? null;
+                }}
+                onAuthenticationRequired={() => openAuth("sign_in", "Sign in to get personalized job match explanations.")}
+                onBackToCareerTools={() => navigate("ai-career")}
+              />}
 
               {loading && (
                 <p role="status">Loading real job opportunities...</p>
@@ -1231,8 +1386,8 @@ function App() {
               )}
 
               {error && <div className="search-error" role="alert"><p>{error}</p><button type="button" className="button button-ghost" onClick={() => { if (loadingMore) void loadMoreJobs(); else void runSearch(); }}>Retry</button></div>}
-              {savedJobsError && <p role="status">{savedJobsError}</p>}
-              {saveError && <p role="status">{saveError}</p>}
+              {savedJobsError && <div className="search-error" role="alert"><p>{savedJobsError}</p><button type="button" className="button button-ghost" onClick={() => setSavedJobsReload((value) => value + 1)}>Retry</button></div>}
+              {saveError && <p role="alert">{saveError}</p>}
 
 
 
@@ -1464,12 +1619,13 @@ function App() {
         <span>Your career. One calm search.</span>
         <span>Built to make job discovery simpler.</span>
       </footer>
-      </>
+      </div>
       )}
 
-      <nav className="mobile-bottom-nav" aria-label="Primary mobile navigation">
+      <nav className="mobile-bottom-nav" aria-label="Primary navigation">
         <button type="button" onClick={() => navigate("home")} aria-current={activeView === "home" ? "page" : undefined}><House size={20} /><span>Home</span></button>
-        <button type="button" onClick={() => navigate("applied")} aria-current={activeView === "applied" ? "page" : undefined}><FileText size={20} /><span>Applied</span></button>
+        <button type="button" onClick={() => navigate("applied")} aria-current={activeView === "applied" ? "page" : undefined}><FileText size={20} /><span>Applied Jobs</span></button>
+        <button type="button" onClick={() => navigate("ai-career")} aria-current={activeView === "ai-career" ? "page" : undefined}><Sparkles size={20} /><span>AI Career</span></button>
         <button type="button" onClick={() => navigate("profile")} aria-current={activeView === "profile" ? "page" : undefined}><UserRound size={20} /><span>Profile</span></button>
       </nav>
 
@@ -1485,7 +1641,7 @@ function App() {
               className="auth-close"
               type="button"
               aria-label="Close authentication"
-              onClick={() => setAuthOpen(false)}
+              onClick={() => { setAuthOpen(false); setPasswordVisible(false); }}
             >
               <X size={19} />
             </button>
@@ -1522,14 +1678,20 @@ function App() {
                 </label>
                 <label>
                   Password
-                  <input
-                    type="password"
-                    autoComplete={authMode === "sign_in" ? "current-password" : "new-password"}
-                    minLength={6}
-                    value={authPassword}
-                    onChange={(event) => setAuthPassword(event.target.value)}
-                    required
-                  />
+                  <span className="password-input-wrap">
+                    <input
+                      id="auth-password"
+                      type={passwordVisible ? "text" : "password"}
+                      autoComplete={authMode === "sign_in" ? "current-password" : "new-password"}
+                      minLength={6}
+                      value={authPassword}
+                      onChange={(event) => setAuthPassword(event.target.value)}
+                      required
+                    />
+                    <button className="password-visibility-toggle" type="button" aria-label={passwordVisible ? "Hide password" : "Show password"} aria-pressed={passwordVisible} aria-controls="auth-password" onClick={() => setPasswordVisible((visible) => !visible)}>
+                      {passwordVisible ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+                    </button>
+                  </span>
                 </label>
                 <button className="button button-primary auth-submit" type="submit" disabled={authBusy}>
                   {authBusy
@@ -1546,6 +1708,7 @@ function App() {
               type="button"
               onClick={() => {
                 setAuthMode((mode) => mode === "sign_in" ? "sign_up" : "sign_in");
+                setPasswordVisible(false);
                 setAuthError("");
                 setAuthNotice("");
               }}
@@ -1556,6 +1719,29 @@ function App() {
             </button>
           </section>
         </div>
+      )}
+      {!authLoading && supabase && session?.user.id && (
+        <CareerAssistant
+          key={session.user.id}
+          visible={showAICareer}
+          apiBaseUrl={API_BASE_URL}
+          apiConfigurationError={apiConfiguration.error}
+          conversationStore={assistantConversationStore}
+          profileName={profileName || greetingName || String(session.user.user_metadata?.full_name ?? session.user.user_metadata?.name ?? "")}
+          profileAvatarUrl={profileAvatarUrl}
+          getAccessToken={async () => {
+            if (!supabase) return null;
+            const { data, error: sessionError } = await supabase.auth.getSession();
+            return sessionError ? null : data.session?.access_token ?? null;
+          }}
+          onAuthenticationRequired={() => {
+            setAuthMode("sign_in");
+            setAuthError("");
+            setAuthNotice("");
+            setAuthOpen(true);
+          }}
+          onSmartMatching={() => { navigate("home"); runRecommendedSearch(); }}
+        />
       )}
     </main>
   );

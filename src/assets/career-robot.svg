@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" fill="none">
+  <defs>
+    <linearGradient id="body" x1="58" y1="49" x2="188" y2="208" gradientUnits="userSpaceOnUse"><stop stop-color="#E5DDFF"/><stop offset=".48" stop-color="#9C7BFF"/><stop offset="1" stop-color="#5543C8"/></linearGradient>
+    <linearGradient id="screen" x1="82" y1="87" x2="163" y2="155" gradientUnits="userSpaceOnUse"><stop stop-color="#242150"/><stop offset="1" stop-color="#13142D"/></linearGradient>
+    <filter id="glow" x="0" y="0" width="240" height="240" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="8"/></filter>
+  </defs>
+  <circle cx="120" cy="135" r="82" fill="#895EFF" opacity=".3" filter="url(#glow)"/>
+  <path d="M120 45v20" stroke="#CBB8FF" stroke-width="5" stroke-linecap="round"/><circle cx="120" cy="35" r="11" fill="#DDD4FF" stroke="#A98CFF" stroke-width="4"/>
+  <path d="M58 109c0-26 21-47 47-47h30c26 0 47 21 47 47v44c0 28-22 50-50 50h-24c-28 0-50-22-50-50v-44Z" fill="url(#body)" stroke="#BFAEFF" stroke-width="4"/>
+  <rect x="74" y="91" width="92" height="72" rx="27" fill="url(#screen)" stroke="#C4B0FF" stroke-width="4"/>
+  <ellipse cx="100" cy="120" rx="6" ry="9" fill="#65D9FF"/><ellipse cx="140" cy="120" rx="6" ry="9" fill="#65D9FF"/>
+  <path d="M105 139c8 9 22 9 30 0" stroke="#A78BFF" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="57" cy="126" r="10" fill="#BFAEFF"/><circle cx="183" cy="126" r="10" fill="#BFAEFF"/>
+  <path d="M92 202v13m56-13v13" stroke="#C8B7FF" stroke-width="8" stroke-linecap="round"/><path d="M79 219h25m32 0h25" stroke="#8C70F5" stroke-width="11" stroke-linecap="round"/>
+  <path d="m40 82 5 12 12 5-12 5-5 12-5-12-12-5 12-5 5-12Zm164 15 3 8 8 3-8 3-3 8-3-8-8-3 8-3 3-8Z" fill="#C7AFFF"/>
+</svg>

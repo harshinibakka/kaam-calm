@@ -27,5 +27,16 @@ jobs:
       - name: Run frontend checks
         run: npm test
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend test dependencies
+        run: python -m pip install -r backend/requirements-dev.txt
+
+      - name: Run backend checks
+        run: python -m pytest -p no:cacheprovider backend/tests
+
       - name: Build application
         run: npm run build
