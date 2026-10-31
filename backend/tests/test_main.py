@@ -4,15 +4,35 @@ import importlib
 import httpx
 import os
 import pytest
+import subprocess
+import sys
 import time
 import uuid
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from types import SimpleNamespace
+from pathlib import Path
 
 from backend import main
 from backend import security
+
+
+def test_render_uvicorn_import_target_from_repository_root():
+    repository_root = Path(__file__).resolve().parents[2]
+    import_check = (
+        "from uvicorn.importer import import_from_string; "
+        "app = import_from_string('backend.main:app'); "
+        "assert app.title == 'Kaam-Calm Job Search API'"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", import_check],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 class FakeResponse:

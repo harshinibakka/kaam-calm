@@ -17,8 +17,8 @@ from fastapi.responses import JSONResponse
 from google import genai
 from google.genai import errors as genai_errors, types
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from backend.security import require_authenticated_user
-from backend.rate_limits import (
+from .security import require_authenticated_user
+from .rate_limits import (
     AssistantProtectionMiddleware,
     RateLimitExceeded,
     RateLimitSettings,
