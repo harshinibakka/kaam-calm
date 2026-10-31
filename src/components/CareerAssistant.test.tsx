@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import CareerAssistant from "./CareerAssistant";
 import type { AssistantConversation, AssistantConversationStore, AssistantConversationSummary } from "../lib/assistantConversations";
@@ -37,6 +37,16 @@ function createConversationStore(overrides: Partial<AssistantConversationStore> 
 function renderAssistant(getAccessToken: () => Promise<string | null> = vi.fn(async () => "test-access-token"), onAuthenticationRequired = vi.fn(), conversationStore?: AssistantConversationStore) {
   render(<CareerAssistant visible apiBaseUrl="http://localhost:8000" getAccessToken={getAccessToken} onAuthenticationRequired={onAuthenticationRequired} onSmartMatching={vi.fn()} conversationStore={conversationStore} />);
   return { getAccessToken, onAuthenticationRequired };
+}
+
+function setViewportWidth(width: number) {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+    matches: query === "(max-width: 700px)" && width <= 700,
+    media: query,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })));
 }
 
 describe("CareerAssistant", () => {
@@ -239,17 +249,88 @@ describe("CareerAssistant", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("inserts an emoji into the draft and sends it", async () => {
-    vi.mocked(fetch).mockResolvedValue(jsonResponse({ reply: "Happy to help.", jobs: [] }));
+  it.each([360, 390, 430])("shows the compact mobile welcome at %ipx and sends a suggested prompt", async (width) => {
+    setViewportWidth(width);
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ reply: "Here are some resume improvements.", jobs: [] }));
+    renderAssistant();
+    const user = userEvent.setup();
+
+    expect(screen.getByText("Kaam-Calm")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open career navigation" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Kaam-Calm career assistant welcome" })).toBeTruthy();
+    expect(document.querySelector(".career-assistant-guide-panel")?.getAttribute("aria-hidden")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Choose emoji" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Attach resume" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "How to improve my resume?" }));
+    expect(await screen.findByText("Here are some resume improvements.")).toBeTruthy();
+    expect(fetch).toHaveBeenCalledWith("http://localhost:8000/api/assistant/chat", expect.objectContaining({ method: "POST" }));
+    expect(screen.queryByRole("region", { name: "Kaam-Calm career assistant welcome" })).toBeNull();
+  });
+
+  it("opens and closes the mobile navigation drawer and returns focus on Escape", async () => {
+    setViewportWidth(390);
+    renderAssistant();
+    const user = userEvent.setup();
+    const menu = screen.getByRole("button", { name: "Open career navigation" });
+    const drawer = document.getElementById("career-assistant-navigation-drawer") as HTMLElement;
+
+    await user.click(menu);
+    expect(drawer.getAttribute("aria-hidden")).toBe("false");
+    expect(drawer.querySelector('button[aria-label="Close career navigation"]')).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(drawer.getAttribute("aria-hidden")).toBe("true");
+    expect(document.activeElement).toBe(menu);
+
+    await user.click(menu);
+    fireEvent.touchStart(drawer, { touches: [{ identifier: 1, target: drawer, clientX: 240, clientY: 80 }] });
+    fireEvent.touchEnd(drawer, { changedTouches: [{ identifier: 1, target: drawer, clientX: 150, clientY: 82 }] });
+    expect(drawer.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("closes the mobile drawer when a tool is selected and leaves job search usable", async () => {
+    setViewportWidth(390);
+    renderAssistant();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open career navigation" }));
+    await user.click(screen.getByRole("button", { name: "Job Search Strategy" }));
+    expect(screen.getByRole("button", { name: "Search listings" })).toBeTruthy();
+    expect(document.getElementById("career-assistant-navigation-drawer")?.getAttribute("aria-hidden")).toBe("true");
+
+    await user.click(screen.getByRole("button", { name: "Open career navigation" }));
+    await user.click(screen.getByRole("button", { name: "Career Guidance" }));
+    expect(screen.queryByRole("button", { name: "Search listings" })).toBeNull();
+    expect((screen.getByRole("textbox", { name: "Message the career assistant" }) as HTMLTextAreaElement).value).toContain("next career steps");
+  });
+
+  it.each([1366, 1920])("keeps desktop workspace controls available at %ipx", async (width) => {
+    setViewportWidth(width);
+    renderAssistant();
+    expect(screen.queryByRole("button", { name: "Open career navigation" })).toBeNull();
+    expect(document.querySelector(".career-assistant-guide-panel")?.getAttribute("aria-hidden")).toBe("false");
+  });
+
+  it.each([360, 700, 701, 768, 1024, 1366, 1920])("keeps only Attachment and Send in the composer at %ipx", (width) => {
+    setViewportWidth(width);
+    renderAssistant();
+    const composer = document.querySelector(".career-assistant-compose");
+    expect(composer?.querySelector('[aria-label="Choose emoji"]')).toBeNull();
+    expect(composer?.querySelector('[aria-label="Attach resume"]')).toBeTruthy();
+    expect(composer?.querySelector('[aria-label="Send message"]')).toBeTruthy();
+    expect(document.querySelector(".career-emoji-picker")).toBeNull();
+  });
+
+  it("preserves emoji characters in ordinary chat content and assistant responses", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ reply: "Happy to help 😊", jobs: [] }));
     renderAssistant();
     const user = userEvent.setup();
     const input = screen.getByRole("textbox", { name: "Message the career assistant" });
-    await user.type(input, "Hi");
-    await user.click(screen.getByRole("button", { name: "Choose emoji" }));
-    await user.click(screen.getByRole("button", { name: "Insert 😊" }));
-    expect((input as HTMLTextAreaElement).value).toBe("Hi😊");
+    await user.type(input, "Hi 😊");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const request = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
+    expect(request.messages).toEqual([{ role: "user", content: "Hi 😊" }]);
+    expect(await screen.findByText("Happy to help 😊")).toBeTruthy();
   });
 
   it("sends selected resume content to the analyzer endpoint", async () => {
@@ -299,6 +380,25 @@ describe("CareerAssistant", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Your sign-in session expired");
     expect(screen.getByRole("alert").textContent).not.toContain("private auth response");
     expect(onAuthenticationRequired).toHaveBeenCalledTimes(1);
+  });
+
+  it("forces one Supabase token refresh and retries a chat request after an authentication rejection", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({ detail: "private auth response" }) } as Response)
+      .mockResolvedValueOnce(jsonResponse({ reply: "Your session was refreshed.", jobs: [] }));
+    const refreshAccessToken = vi.fn(async () => "refreshed-access-token");
+    const onAuthenticationRequired = vi.fn();
+    render(<CareerAssistant visible apiBaseUrl="http://localhost:8000" getAccessToken={async () => "stale-access-token"} refreshAccessToken={refreshAccessToken} onAuthenticationRequired={onAuthenticationRequired} onSmartMatching={vi.fn()} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Message the career assistant" }), "Give me interview advice");
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByText("Your session was refreshed.")).toBeTruthy();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer stale-access-token" }));
+    expect(vi.mocked(fetch).mock.calls[1][1]?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer refreshed-access-token" }));
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+    expect(onAuthenticationRequired).not.toHaveBeenCalled();
   });
 
   it("handles malformed success JSON without showing response contents", async () => {

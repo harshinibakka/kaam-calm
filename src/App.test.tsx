@@ -79,6 +79,7 @@ function createSupabaseMock(
         return { data: { subscription: { unsubscribe: vi.fn() } } };
       }),
       getSession: vi.fn(async () => ({ data: { session: currentSession }, error: null })),
+      refreshSession: vi.fn(async () => ({ data: { session: currentSession }, error: null })),
       signInWithPassword: vi.fn(async ({ email }) => {
         currentSession = { user: { id: "user-1", email } };
         authListener?.("SIGNED_IN", currentSession);
@@ -191,6 +192,32 @@ describe("job search flows", () => {
     expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer restored-session-token" }));
     const request = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
     expect(request).not.toHaveProperty("user_id");
+  });
+
+  it("refreshes a rejected AI Career access token and retries with the new Supabase token", async () => {
+    const mock = createSupabaseMock({ access_token: "stale-session-token", user: { id: "user-1", email: "person@example.com" } });
+    mock.client.auth.refreshSession.mockResolvedValueOnce({
+      data: { session: { access_token: "fresh-session-token", user: { id: "user-1", email: "person@example.com" } } },
+      error: null,
+    });
+    supabaseMockState.client = mock.client;
+    supabaseMockState.configuration = "configured";
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({ detail: "private auth response" }) } as Response)
+      .mockResolvedValueOnce(jsonResponse({ reply: "The refreshed session works.", jobs: [] }));
+    render(<App />);
+    await screen.findByRole("region", { name: "Your job search dashboard" });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "AI Career" }));
+    await user.type(screen.getByRole("textbox", { name: "Message the career assistant" }), "Interview advice");
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByText("The refreshed session works.")).toBeTruthy();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer stale-session-token" }));
+    expect(vi.mocked(fetch).mock.calls[1][1]?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer fresh-session-token" }));
+    expect(mock.client.auth.refreshSession).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: "Welcome back" })).toBeNull();
   });
 
   it("starts one search only after the user clicks Find jobs", async () => {

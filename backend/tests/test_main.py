@@ -552,6 +552,26 @@ def test_assistant_rejects_expired_or_wrong_project_es256_tokens(monkeypatch, cl
     assert adzuna_calls == []
 
 
+def test_expired_es256_auth_logs_only_safe_failure_category(monkeypatch, caplog):
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="backend.security")
+    signing_key = make_test_signing_key()
+    install_fake_jwks(monkeypatch, signing_key.public_key())
+    token = make_assistant_token(signing_key, exp=int(time.time()) - 10)
+
+    response = TestClient(main.app).post(
+        "/api/assistant/chat",
+        json={"messages": [{"role": "user", "content": "Give me interview advice"}]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 401
+    assert "category=token_expired algorithm=ES256" in caplog.text
+    assert token not in caplog.text
+    assert "f2a73b38-256a-4a3a-90a4-393859c0a6ab" not in caplog.text
+
+
 def test_assistant_rejects_invalid_es256_signature_without_provider_calls(monkeypatch):
     trusted_key = make_test_signing_key()
     untrusted_key = make_test_signing_key()

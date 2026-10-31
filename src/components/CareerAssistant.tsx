@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ComponentProps, type FormEvent } from "react";
-import { ArrowUpRight, BriefcaseBusiness, Clock3, MessageSquareText, Send, Sparkles, Trash2, Paperclip, Smile, X, FileText } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type FormEvent, type TouchEvent as ReactTouchEvent } from "react";
+import { ArrowUpRight, BriefcaseBusiness, Clock3, Menu, MessageSquareText, Send, Sparkles, Trash2, Paperclip, X, FileText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { conversationStorageErrorMessage, type AssistantConversationStore, type AssistantConversationSummary, type StoredAssistantMessage } from "../lib/assistantConversations";
 import careerRobot from "../assets/career-robot.svg";
@@ -21,6 +21,7 @@ type CareerAssistantProps = {
   apiBaseUrl: string;
   apiConfigurationError?: string | null;
   getAccessToken: () => Promise<string | null>;
+  refreshAccessToken?: () => Promise<string | null>;
   onAuthenticationRequired: () => void;
   onSmartMatching: () => void;
   conversationStore?: AssistantConversationStore | null;
@@ -57,6 +58,34 @@ async function assistantJson(response: Response, operation: "chat" | "resume", o
     throw new Error("The career assistant returned an unreadable response. Please retry.");
   }
   return result as Record<string, unknown>;
+}
+
+async function fetchAssistantWithRefresh(
+  url: string,
+  init: RequestInit,
+  accessToken: string,
+  refreshAccessToken?: () => Promise<string | null>,
+): Promise<Response> {
+  const send = (token: string) => {
+    const headers = { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` };
+    return fetch(url, { ...init, headers });
+  };
+  const response = await send(accessToken);
+  if (response.status !== 401 || !refreshAccessToken) return response;
+  console.warn("AI Career auth diagnostic (attempt=initial result=401 bearer_header_attached=true)");
+
+  try {
+    const refreshedToken = await refreshAccessToken();
+    console.info(`AI Career auth diagnostic (refresh_access_token_available=${Boolean(refreshedToken)})`);
+    if (!refreshedToken) return response;
+    const retryResponse = await send(refreshedToken);
+    console.info(`AI Career auth diagnostic (attempt=refreshed_retry result_status=${retryResponse.status})`);
+    return retryResponse;
+  } catch {
+    // Keep the original 401 behavior when refresh itself is unavailable.
+    console.warn("AI Career auth diagnostic (refresh_attempt=failed result=original_401_retained)");
+    return response;
+  }
 }
 
 function requestErrorMessage(error: unknown, apiBaseUrl: string, timeoutMessage: string): string {
@@ -106,7 +135,9 @@ const suggestedPrompts = [
   { label: "Find jobs matching my skills", action: "matching" as const },
 ];
 
-export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationError = null, getAccessToken, onAuthenticationRequired, onSmartMatching, conversationStore = null, profileName = "", profileAvatarUrl = "" }: CareerAssistantProps) {
+export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationError = null, getAccessToken, refreshAccessToken, onAuthenticationRequired, onSmartMatching, conversationStore = null, profileName = "", profileAvatarUrl = "" }: CareerAssistantProps) {
+  const [isMobileViewport, setIsMobileViewport] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.("(max-width: 700px)").matches));
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [conversations, setConversations] = useState<AssistantConversationSummary[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -123,7 +154,6 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [attachment, setAttachment] = useState<File | null>(null);
-  const [emojiOpen, setEmojiOpen] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
   const [uploadStage, setUploadStage] = useState("");
   const [retryAction, setRetryAction] = useState<(() => Promise<void>) | null>(null);
@@ -131,7 +161,64 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
   const [profileAvatarFailed, setProfileAvatarFailed] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const drawerTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const requestInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mediaQuery = window.matchMedia("(max-width: 700px)");
+    const updateViewport = () => {
+      setIsMobileViewport(mediaQuery.matches);
+      if (!mediaQuery.matches) setMobileNavOpen(false);
+    };
+    updateViewport();
+    mediaQuery.addEventListener?.("change", updateViewport);
+    return () => mediaQuery.removeEventListener?.("change", updateViewport);
+  }, []);
+
+  useEffect(() => {
+    if (!visible || !isMobileViewport) return;
+    const workspace = workspaceRef.current;
+    const visualViewport = window.visualViewport;
+    const updateVisibleViewport = () => {
+      workspace?.style.setProperty("--career-visual-height", `${visualViewport?.height ?? window.innerHeight}px`);
+      workspace?.style.setProperty("--career-visual-top", `${visualViewport?.offsetTop ?? 0}px`);
+    };
+    updateVisibleViewport();
+    visualViewport?.addEventListener("resize", updateVisibleViewport);
+    visualViewport?.addEventListener("scroll", updateVisibleViewport);
+    window.addEventListener("resize", updateVisibleViewport);
+    return () => {
+      visualViewport?.removeEventListener("resize", updateVisibleViewport);
+      visualViewport?.removeEventListener("scroll", updateVisibleViewport);
+      window.removeEventListener("resize", updateVisibleViewport);
+    };
+  }, [isMobileViewport, visible]);
+
+  useLayoutEffect(() => {
+    const textarea = inputRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const measuredMax = Number.parseFloat(window.getComputedStyle(textarea).maxHeight);
+    const maxHeight = Number.isFinite(measuredMax) ? measuredMax : 160;
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 38), maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [draft, isMobileViewport, visible]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileNavOpen(false);
+        mobileMenuButtonRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [mobileNavOpen]);
 
   useEffect(() => setProfileAvatarFailed(false), [profileAvatarUrl]);
 
@@ -211,6 +298,31 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
     setDeletingConversationId(null);
   };
 
+  const prepareMobileToolSelection = () => {
+    if (isMobileViewport) setShowJobSearch(false);
+    setMobileNavOpen(false);
+  };
+
+  const openSmartMatching = () => {
+    prepareMobileToolSelection();
+    onSmartMatching();
+  };
+
+  const rememberDrawerTouch = (event: ReactTouchEvent<HTMLElement>) => {
+    const touch = event.touches[0];
+    if (touch) drawerTouchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  };
+
+  const closeDrawerOnLeftSwipe = (event: ReactTouchEvent<HTMLElement>) => {
+    const start = drawerTouchStartRef.current;
+    const touch = event.changedTouches[0];
+    drawerTouchStartRef.current = null;
+    if (!start || !touch) return;
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (deltaX < -60 && Math.abs(deltaX) > Math.abs(deltaY) * 1.25) setMobileNavOpen(false);
+  };
+
   const openConversation = async (conversationId: string) => {
     if (!conversationStore || busy || conversationBusy) return;
     setConversationBusy(true);
@@ -286,15 +398,14 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
           savedConversationId,
         );
       }
-      const response = await fetch(`${apiBaseUrl}/api/assistant/chat`, {
+      const response = await fetchAssistantWithRefresh(`${apiBaseUrl}/api/assistant/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({ messages: nextHistory, ...(jobSearch ? { job_search: jobSearch } : {}) }),
         signal: AbortSignal.timeout(65000),
-      });
+      }, accessToken, refreshAccessToken);
       const result = await assistantJson(response, "chat", onAuthenticationRequired);
       if (typeof result?.reply !== "string") throw new Error("The career assistant returned an invalid response.");
       const jobs = Array.isArray(result.jobs) ? result.jobs as AssistantJob[] : [];
@@ -316,7 +427,7 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
         try {
           const token = await getAccessToken();
           if (!token) { onAuthenticationRequired(); throw new Error("Your session is unavailable. Please sign in again."); }
-          const retryResponse = await fetch(`${apiBaseUrl}/api/assistant/chat`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ messages: nextHistory, ...(jobSearch ? { job_search: jobSearch } : {}) }), signal: AbortSignal.timeout(65000) });
+          const retryResponse = await fetchAssistantWithRefresh(`${apiBaseUrl}/api/assistant/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextHistory, ...(jobSearch ? { job_search: jobSearch } : {}) }), signal: AbortSignal.timeout(65000) }, token, refreshAccessToken);
           const retryResult = await assistantJson(retryResponse, "chat", onAuthenticationRequired);
           if (typeof retryResult?.reply !== "string") throw new Error("The career assistant returned an invalid response.");
           const answer: AssistantMessage = { role: "assistant", content: retryResult.reply, createdAt: new Date().toISOString(), ...(Array.isArray(retryResult.jobs) && retryResult.jobs.length ? { jobs: retryResult.jobs as AssistantJob[] } : {}) };
@@ -335,16 +446,6 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
   const submitChat = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     void sendMessage(draft);
-  };
-
-  const insertEmoji = (emoji: string) => {
-    const input = inputRef.current;
-    const start = input?.selectionStart ?? draft.length;
-    const end = input?.selectionEnd ?? draft.length;
-    const next = `${draft.slice(0, start)}${emoji}${draft.slice(end)}`;
-    setDraft(next);
-    setEmojiOpen(false);
-    requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(start + emoji.length, start + emoji.length); });
   };
 
   const submitWithAttachment = async (event: FormEvent<HTMLFormElement>) => {
@@ -366,7 +467,7 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
       setUploadStage("Uploading attachment…");
       const data = new FormData(); data.append("file", attachment); data.append("job_description", text.toLowerCase().includes("job description:") ? text.split(/job description:/i).slice(1).join("").slice(0, 6000) : "");
       setUploadStage("Uploading and analyzing attachment…");
-      const response = await fetch(`${apiBaseUrl}/api/assistant/resume-analysis`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: data, signal: AbortSignal.timeout(45000) });
+      const response = await fetchAssistantWithRefresh(`${apiBaseUrl}/api/assistant/resume-analysis`, { method: "POST", body: data, signal: AbortSignal.timeout(45000) }, token, refreshAccessToken);
       const result = await assistantJson(response, "resume", onAuthenticationRequired);
       if (typeof result?.reply !== "string") throw new Error("The attachment analyzer returned an invalid response.");
       const assistantMessage: AssistantMessage = { role: "assistant", content: result.reply, createdAt: new Date().toISOString() };
@@ -382,7 +483,7 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
         try {
           const token = await getAccessToken(); if (!token) { onAuthenticationRequired(); throw new Error("Your session is unavailable. Please sign in again."); }
           const retryData = new FormData(); retryData.append("file", attachment); retryData.append("job_description", text.toLowerCase().includes("job description:") ? text.split(/job description:/i).slice(1).join("").slice(0, 6000) : "");
-          const retryResponse = await fetch(`${apiBaseUrl}/api/assistant/resume-analysis`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: retryData, signal: AbortSignal.timeout(45000) });
+          const retryResponse = await fetchAssistantWithRefresh(`${apiBaseUrl}/api/assistant/resume-analysis`, { method: "POST", body: retryData, signal: AbortSignal.timeout(45000) }, token, refreshAccessToken);
           const retryResult = await assistantJson(retryResponse, "resume", onAuthenticationRequired);
           if (typeof retryResult?.reply !== "string") throw new Error("The attachment analyzer returned an invalid response.");
           const answer: AssistantMessage = { role: "assistant", content: retryResult.reply, createdAt: new Date().toISOString() }; setMessages((current) => [...current, answer]);
@@ -404,22 +505,45 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
     setShowJobSearch(false);
   };
 
+  const showMobileWelcome = isMobileViewport && messages.length === 0 && !showJobSearch;
+
   return (
-    <section className="career-assistant-workspace" aria-labelledby="career-assistant-title" hidden={!visible}>
+    <section ref={workspaceRef} className="career-assistant-workspace" aria-labelledby="career-assistant-title" hidden={!visible}>
+      {isMobileViewport && <header className="career-assistant-mobile-header">
+        <button
+          ref={mobileMenuButtonRef}
+          type="button"
+          className="career-assistant-mobile-menu"
+          aria-label={mobileNavOpen ? "Close career navigation" : "Open career navigation"}
+          aria-expanded={mobileNavOpen}
+          aria-controls="career-assistant-navigation-drawer"
+          onClick={() => setMobileNavOpen((open) => !open)}
+        ><Menu size={21} /></button>
+        <span>Kaam-Calm</span>
+      </header>}
       <header className="career-assistant-header">
         <div><span className="career-assistant-icon"><Sparkles size={19} /></span><div><span className="career-assistant-eyebrow">YOUR CAREER WORKSPACE</span><h1 id="career-assistant-title">AI Career Assistant</h1><small>Your personal career guide</small></div></div>
         <span className="career-assistant-secure"><span aria-hidden="true" /> Private session</span>
       </header>
+      {isMobileViewport && mobileNavOpen && <button type="button" className="career-assistant-drawer-backdrop" aria-label="Close career navigation" onClick={() => setMobileNavOpen(false)} />}
       <div className="career-assistant-layout">
-        <aside className="career-assistant-sidebar" aria-label="AI Career tools and recent chats">
+        <aside
+          id="career-assistant-navigation-drawer"
+          className={`career-assistant-sidebar${mobileNavOpen ? " is-open" : ""}`}
+          aria-label="AI Career tools and recent chats"
+          aria-hidden={isMobileViewport ? !mobileNavOpen : undefined}
+          onTouchStart={isMobileViewport && mobileNavOpen ? rememberDrawerTouch : undefined}
+          onTouchEnd={isMobileViewport && mobileNavOpen ? closeDrawerOnLeftSwipe : undefined}
+        >
+          {isMobileViewport && <div className="career-assistant-drawer-heading"><span>Career tools</span><button type="button" aria-label="Close career navigation" onClick={() => setMobileNavOpen(false)}><X size={18} /></button></div>}
           <nav className="career-assistant-tools" aria-label="Career tools">
-            <button type="button" className="career-assistant-tool active" onClick={startNewConversation}><MessageSquareText size={17} />New Chat</button>
-            <button type="button" className="career-assistant-tool" onClick={() => { setDraft("Help me prepare for a software engineering interview. Ask me common questions and give feedback on my answers."); inputRef.current?.focus(); }}><BriefcaseBusiness size={17} />Interview Preparation</button>
-            <button type="button" className="career-assistant-tool" onClick={() => { setDraft("Please review my resume and suggest specific improvements."); fileRef.current?.click(); }}><FileText size={17} />Resume Guidance &amp; Analyzer</button>
-            <button type="button" className="career-assistant-tool" onClick={() => { setDraft("Create a practical skill development roadmap for my career goals."); inputRef.current?.focus(); }}><Sparkles size={17} />Skill Development</button>
-            <button type="button" className="career-assistant-tool" onClick={() => { setDraft("Help me choose my next career steps based on my goals and experience."); inputRef.current?.focus(); }}><ArrowUpRight size={17} />Career Guidance</button>
-            <button type="button" className="career-assistant-tool" onClick={() => setShowJobSearch(true)}><BriefcaseBusiness size={17} />Job Search Strategy</button>
-            <button type="button" className="career-assistant-tool" onClick={onSmartMatching}><ArrowUpRight size={17} />Smart Job Matching</button>
+            <button type="button" className="career-assistant-tool active" onClick={() => { startNewConversation(); setMobileNavOpen(false); }}><MessageSquareText size={17} />New Chat</button>
+            <button type="button" className="career-assistant-tool" onClick={() => { prepareMobileToolSelection(); setDraft("Help me prepare for a software engineering interview. Ask me common questions and give feedback on my answers."); inputRef.current?.focus(); }}><BriefcaseBusiness size={17} />Interview Preparation</button>
+            <button type="button" className="career-assistant-tool" onClick={() => { prepareMobileToolSelection(); setDraft("Please review my resume and suggest specific improvements."); fileRef.current?.click(); }}><FileText size={17} />Resume Guidance &amp; Analyzer</button>
+            <button type="button" className="career-assistant-tool" onClick={() => { prepareMobileToolSelection(); setDraft("Create a practical skill development roadmap for my career goals."); inputRef.current?.focus(); }}><Sparkles size={17} />Skill Development</button>
+            <button type="button" className="career-assistant-tool" onClick={() => { prepareMobileToolSelection(); setDraft("Help me choose my next career steps based on my goals and experience."); inputRef.current?.focus(); }}><ArrowUpRight size={17} />Career Guidance</button>
+            <button type="button" className="career-assistant-tool" onClick={() => { setShowJobSearch(true); setMobileNavOpen(false); }}><BriefcaseBusiness size={17} />Job Search Strategy</button>
+            <button type="button" className="career-assistant-tool" onClick={openSmartMatching}><ArrowUpRight size={17} />Smart Job Matching</button>
           </nav>
           <section className="career-assistant-history" aria-labelledby="career-assistant-history-title">
             <div className="career-assistant-history-heading">
@@ -434,7 +558,7 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
             {conversations.length > 0 && <ul className="career-assistant-history-list" aria-label="Saved conversations">
               {conversations.map((conversation) => (
                 <li className="career-assistant-history-item" key={conversation.id}>
-                  <button type="button" className="career-assistant-history-open" aria-label={`Open conversation: ${conversation.title}`} aria-current={activeConversationId === conversation.id ? "true" : undefined} onClick={() => void openConversation(conversation.id)} disabled={busy || conversationBusy}>
+                  <button type="button" className="career-assistant-history-open" aria-label={`Open conversation: ${conversation.title}`} aria-current={activeConversationId === conversation.id ? "true" : undefined} onClick={() => { setMobileNavOpen(false); void openConversation(conversation.id); }} disabled={busy || conversationBusy}>
                     <strong id={`assistant-conversation-title-${conversation.id}`}>{conversation.title}</strong>
                     <small><Clock3 size={13} /> Updated <time dateTime={conversation.updated_at}>{new Date(conversation.updated_at).toLocaleDateString()}</time></small>
                   </button>
@@ -449,7 +573,15 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
             </ul>}
           </section>
         </aside>
-        <main className="career-assistant-chat-panel" aria-label="Career assistant conversation">
+        <main className={`career-assistant-chat-panel${showMobileWelcome ? " has-mobile-welcome" : ""}`} aria-label="Career assistant conversation">
+          {showMobileWelcome && <section className="career-assistant-mobile-welcome" aria-label="Kaam-Calm career assistant welcome">
+            <img src={careerRobot} alt="" />
+            <h2>Welcome to Kaam-Calm</h2>
+            <p>I'm your AI Career Assistant. Ask about interviews, resumes, skills, job search, or career growth.</p>
+            <div className="career-assistant-mobile-prompts" aria-label="Suggested questions">
+              {suggestedPrompts.map(({ label, action }) => <button type="button" key={label} onClick={() => { if (action === "matching") openSmartMatching(); else void sendMessage(label); }}><span>{label}</span><ArrowUpRight size={17} /></button>)}
+            </div>
+          </section>}
           <div className="career-assistant-messages" ref={scrollRef} aria-live="polite" aria-label="Conversation">
             {messages.map((message, index) => (
               <div className={`career-assistant-message ${message.role}`} key={`${index}-${message.role}`}>
@@ -498,18 +630,16 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
             <button type="button" className="career-assistant-find-jobs" onClick={() => setShowJobSearch((shown) => !shown)} disabled={busy}><BriefcaseBusiness size={15} /> Find actual jobs</button>
             <form className="career-assistant-compose" onSubmit={submitWithAttachment}>
               <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.jpg,.jpeg,.png,.webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,image/jpeg,image/png,image/webp" hidden onChange={(event) => selectAttachment(event.target.files?.[0] ?? null)} />
-              <button type="button" className="career-composer-tool" aria-label="Attach resume" onClick={() => fileRef.current?.click()} disabled={busy}><Paperclip size={17} /></button>
+              <button type="button" className="career-composer-tool career-composer-attachment" aria-label="Attach resume" onClick={() => fileRef.current?.click()} disabled={busy}><Paperclip size={17} /></button>
               <textarea ref={inputRef} aria-label="Message the career assistant" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (draft.trim() || attachment) void submitWithAttachment({ preventDefault() {} } as FormEvent<HTMLFormElement>); } }} maxLength={2500} placeholder="Ask a career question…" disabled={busy} rows={1} />
-              <button type="button" className="career-composer-tool" aria-label="Choose emoji" aria-expanded={emojiOpen} onClick={() => setEmojiOpen((open) => !open)} disabled={busy}><Smile size={17} /></button>
               <button type="submit" aria-label="Send message" disabled={busy || (!draft.trim() && !attachment)}><Send size={17} /></button>
             </form>
             {attachment && <div className="career-attachment-chip">{attachmentPreview ? <img src={attachmentPreview} alt="Selected image preview" /> : <FileText size={15} />}<span>{attachment.name} · {(attachment.size / 1024).toFixed(0)} KB</span><button type="button" aria-label="Remove attachment" onClick={() => { setAttachment(null); if (fileRef.current) fileRef.current.value = ""; }}><X size={14} /></button></div>}
             {attachmentError && <p role="alert" className="career-assistant-error">{attachmentError}</p>}
-            {emojiOpen && <div className="career-emoji-picker" role="group" aria-label="Common emojis">{["😊","👋","🎯","✨","💼","🙌","👍","💡","❤️","🚀","📄","🌱"].map((emoji) => <button type="button" key={emoji} aria-label={`Insert ${emoji}`} onClick={() => insertEmoji(emoji)}>{emoji}</button>)}</div>}
           </div>
           </div>
         </main>
-        <aside className="career-assistant-guide-panel" aria-label="Assistant welcome and suggestions">
+        <aside className="career-assistant-guide-panel" aria-label="Assistant welcome and suggestions" aria-hidden={isMobileViewport}>
           <img className="career-assistant-robot-art" src={careerRobot} alt="Friendly AI assistant robot" />
           <section className="career-assistant-guide-card"><strong>Hi there! 👋<br />I'm your AI Career Assistant.</strong><p>Ask me anything about interviews, resumes, skills, job search, or career growth.</p></section>
           <div className="career-assistant-guide-prompts" aria-label="Suggested prompts">
