@@ -1734,6 +1734,11 @@ function App() {
             const { data, error: sessionError } = await supabase.auth.getSession();
             return sessionError ? null : data.session?.access_token ?? null;
           }}
+          refreshAccessToken={async () => {
+            if (!supabase) return null;
+            const { data, error: refreshError } = await supabase.auth.refreshSession();
+            return refreshError ? null : data.session?.access_token ?? null;
+          }}
           onAuthenticationRequired={() => {
             setAuthMode("sign_in");
             setAuthError("");
