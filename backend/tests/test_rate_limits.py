@@ -1,5 +1,4 @@
 import asyncio
-import ipaddress
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -88,7 +87,7 @@ def test_local_concurrency_leases_reject_and_release_at_boundary():
     asyncio.run(lease.release())
 
 
-def test_production_requires_shared_redis_and_explicit_matching_proxy_configuration(monkeypatch):
+def test_production_requires_shared_redis_without_proxy_cidr_configuration(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("RATE_LIMIT_BACKEND", "memory")
     with pytest.raises(RateLimitUnavailable):
@@ -96,16 +95,11 @@ def test_production_requires_shared_redis_and_explicit_matching_proxy_configurat
 
     monkeypatch.setenv("RATE_LIMIT_BACKEND", "redis")
     monkeypatch.setenv("REDIS_URL", "redis://uncontacted.invalid/0")
-    monkeypatch.setenv("RATE_LIMIT_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
-    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "192.0.2.0/24")
     settings = RateLimitSettings.from_environment()
     limiter = create_limiter(settings)
     assert isinstance(limiter, RedisLimiter)
     assert limiter._client is None
 
-    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
-    with pytest.raises(RateLimitUnavailable):
-        RateLimitSettings.from_environment()
 
 
 def test_missing_local_limiter_settings_fail_closed_with_safe_reason(monkeypatch):
@@ -126,7 +120,7 @@ def test_explicit_local_development_settings_use_only_bounded_memory_limiter(mon
     assert isinstance(limiter, InMemoryLimiter)
 
 
-def test_proxy_client_ip_ignores_forwarded_header_and_rejects_unresolved_proxy():
+def test_local_client_ip_uses_socket_peer_and_ignores_forwarded_headers():
     development = development_settings()
     scope = {
         "client": ("198.51.100.12", 4567),
@@ -134,16 +128,71 @@ def test_proxy_client_ip_ignores_forwarded_header_and_rejects_unresolved_proxy()
     }
     assert client_ip_from_scope(scope, development) == "198.51.100.12"
 
-    production = replace(
-        development,
-        environment="production",
-        backend="redis",
-        redis_url="redis://uncontacted.invalid/0",
-        trusted_proxy_networks=(ipaddress.ip_network("192.0.2.0/24"),),
+
+def production_settings(**changes):
+    return replace(
+        development_settings(), environment="production", backend="redis",
+        redis_url="redis://uncontacted.invalid/0", **changes,
     )
-    assert client_ip_from_scope(scope, production) == "198.51.100.12"
+
+
+@pytest.mark.parametrize(("header", "expected"), [
+    (b"198.51.100.22", "198.51.100.22"),
+    (b"2001:0db8::1", "2001:db8::1"),
+])
+def test_production_client_ip_accepts_strict_ipv4_and_ipv6_cf_header(header, expected):
+    scope = {"client": ("192.0.2.8", 80), "headers": [(b"cf-connecting-ip", header)]}
+    assert client_ip_from_scope(scope, production_settings()) == expected
+
+
+@pytest.mark.parametrize("headers", [
+    [],
+    [(b"cf-connecting-ip", b"not-an-ip")],
+    [(b"cf-connecting-ip", b"198.51.100.1, 198.51.100.2")],
+    [(b"cf-connecting-ip", b"198.51.100.1"), (b"CF-Connecting-IP", b"198.51.100.2")],
+])
+def test_production_client_ip_fails_closed_for_missing_invalid_or_multiple_values(headers):
     with pytest.raises(RateLimitUnavailable):
-        client_ip_from_scope({"client": ("192.0.2.8", 80)}, production)
+        client_ip_from_scope({"client": ("192.0.2.8", 80), "headers": headers}, production_settings())
+
+
+def test_production_client_ip_ignores_spoofed_x_forwarded_for():
+    settings = production_settings()
+    base = [(b"cf-connecting-ip", b"198.51.100.40")]
+    a = client_ip_from_scope({"headers": base + [(b"x-forwarded-for", b"203.0.113.1")]}, settings)
+    b = client_ip_from_scope({"headers": base + [(b"x-forwarded-for", b"203.0.113.2")]}, settings)
+    assert a == b == "198.51.100.40"
+
+
+def test_production_ip_limit_uses_independent_cf_client_identities():
+    settings = production_settings(ip_per_minute=1)
+    limiter = InMemoryLimiter()
+
+    async def check(ip):
+        await limiter.check_rate_limits(f"ip:{ip}", (RateRule("ip-minute", 1, 60),))
+
+    asyncio.run(check(client_ip_from_scope({"headers": [(b"cf-connecting-ip", b"198.51.100.41")]}, settings)))
+    asyncio.run(check(client_ip_from_scope({"headers": [(b"cf-connecting-ip", b"198.51.100.42")]}, settings)))
+    with pytest.raises(RateLimitExceeded):
+        asyncio.run(check(client_ip_from_scope({"headers": [(b"cf-connecting-ip", b"198.51.100.41")]}, settings)))
+
+
+def test_production_middleware_fails_closed_without_trusted_cf_header():
+    settings = production_settings()
+    limiter = InMemoryLimiter()
+    responses = []
+    middleware = AssistantProtectionMiddleware(lambda *_: None, settings, limiter)
+    scope = {"type": "http", "method": "POST", "path": "/api/assistant/chat", "headers": [], "client": ("192.0.2.8", 80)}
+
+    async def receive():
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    async def send(message):
+        responses.append(message)
+
+    asyncio.run(middleware(scope, receive, send))
+    start = next(message for message in responses if message["type"] == "http.response.start")
+    assert start["status"] == 503
 
 
 def test_assistant_ip_limit_runs_before_auth_and_ignores_spoofed_xff(monkeypatch):
