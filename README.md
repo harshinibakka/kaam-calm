@@ -39,8 +39,10 @@ $env:SUPABASE_PUBLISHABLE_KEY = "your-kaam-calm-test-publishable-key"
 $env:GEMINI_API_KEY = "your-gemini-api-key"
 # Optional; defaults to gemini-3.5-flash-lite.
 $env:GEMINI_MODEL = "gemini-3.5-flash-lite"
-python -m uvicorn main:app --reload --app-dir backend --no-proxy-headers --port 8001
+python -m uvicorn backend.main:app --reload --no-proxy-headers --port 8001
 ```
+
+For the Render web service, keep its Root Directory at the repository root (the default), use `pip install -r backend/requirements.txt` as the Build Command, and use `uvicorn backend.main:app --host 0.0.0.0 --port $PORT` as the Start Command. The backend is a Python package and must be imported from the repository root; do not set the service Root Directory to `backend/` with this package-form command. Uvicorn's proxy-header trust must also be configured separately using the verified Render proxy ranges as described below.
 
 The backend listens at `http://127.0.0.1:8001`; the frontend `.env` should use `VITE_API_BASE_URL=http://127.0.0.1:8001`. Local development must explicitly use `APP_ENV=development` and `RATE_LIMIT_BACKEND=memory`; this limiter is bounded and process-local, and is not suitable for a public multi-instance deployment. The backend reads `ADZUNA_APP_ID`, `ADZUNA_APP_KEY`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `GEMINI_API_KEY`, and the optional `GEMINI_MODEL` from its process environment. `SUPABASE_URL` selects the Auth issuer and JWKS used to verify signed-in users; it is required in production. Legacy HS256 sessions also require that project's publishable key. `GEMINI_MODEL` defaults to `gemini-3.5-flash-lite`. Keep credentials out of frontend variables and source control; never use a `VITE_` prefix for them.
 
