@@ -48,7 +48,6 @@ class RateLimitSettings:
     user_concurrency: int
     max_body_bytes: int
     total_timeout_seconds: float
-    trusted_proxy_networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]
 
     @classmethod
     def from_environment(cls) -> "RateLimitSettings":
@@ -59,21 +58,9 @@ class RateLimitSettings:
         if environment == "development":
             if backend != "memory":
                 raise RateLimitUnavailable("development_requires_memory_backend")
-            networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
         elif environment == "production":
             if backend != "redis" or not redis_url:
                 raise RateLimitUnavailable("production_requires_shared_redis_backend")
-            network_text = os.getenv("RATE_LIMIT_TRUSTED_PROXY_CIDRS", "").strip()
-            forwarded_text = os.getenv("FORWARDED_ALLOW_IPS", "").strip()
-            if not network_text or not forwarded_text or "*" in network_text or "*" in forwarded_text:
-                raise RateLimitUnavailable("production_requires_explicit_trusted_proxy_ranges")
-            try:
-                networks = tuple(ipaddress.ip_network(item.strip(), strict=False) for item in network_text.split(","))
-                forwarded_networks = tuple(ipaddress.ip_network(item.strip(), strict=False) for item in forwarded_text.split(","))
-            except ValueError as error:
-                raise RateLimitUnavailable("production_trusted_proxy_ranges_invalid") from error
-            if not networks or set(networks) != set(forwarded_networks):
-                raise RateLimitUnavailable("production_proxy_ranges_do_not_match")
         else:
             # An unset or unknown deployment mode must never select memory storage.
             raise RateLimitUnavailable("unsupported_or_missing_environment")
@@ -105,7 +92,6 @@ class RateLimitSettings:
             user_concurrency=positive_int("RATE_LIMIT_USER_CONCURRENCY", 2),
             max_body_bytes=positive_int("ASSISTANT_MAX_BODY_BYTES", 131072),
             total_timeout_seconds=total_timeout,
-            trusted_proxy_networks=networks,
         )
 
 
@@ -350,6 +336,22 @@ def create_limiter(settings: RateLimitSettings) -> Limiter:
 
 
 def client_ip_from_scope(scope: dict, settings: RateLimitSettings) -> str | None:
+    if settings.environment == "production":
+        # Render ingress is configured to accept traffic through Cloudflare. Use
+        # Cloudflare's single client-IP header as the identity; never derive it
+        # from X-Forwarded-For or the proxy socket address.
+        values = [value for key, value in scope.get("headers", ()) if key.lower() == b"cf-connecting-ip"]
+        if len(values) != 1:
+            raise RateLimitUnavailable("trusted_client_ip_header_missing_or_duplicated")
+        try:
+            raw = values[0].decode("ascii", errors="strict")
+            address = ipaddress.ip_address(raw)
+        except (UnicodeDecodeError, ValueError) as error:
+            raise RateLimitUnavailable("trusted_client_ip_header_invalid") from error
+        if isinstance(address, ipaddress.IPv6Address) and address.scope_id is not None:
+            raise RateLimitUnavailable("trusted_client_ip_header_invalid")
+        return address.compressed
+
     client = scope.get("client")
     if not client or not client[0]:
         if settings.environment == "development":
@@ -361,11 +363,6 @@ def client_ip_from_scope(scope: dict, settings: RateLimitSettings) -> str | None
         if settings.environment == "development":
             return None
         raise RateLimitUnavailable()
-    if settings.environment == "production":
-        if any(address in network for network in settings.trusted_proxy_networks):
-            # Uvicorn did not resolve a forwarded client address through the
-            # explicitly configured trusted proxy, so this would be a shared proxy IP.
-            raise RateLimitUnavailable()
     return address.compressed
 
 
