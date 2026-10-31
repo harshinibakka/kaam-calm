@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type FormEvent, type TouchEvent as ReactTouchEvent } from "react";
-import { ArrowUpRight, BriefcaseBusiness, Clock3, Menu, MessageSquareText, Send, Sparkles, Trash2, Paperclip, X, FileText } from "lucide-react";
+import { ArrowUpRight, BriefcaseBusiness, Clock3, Menu, MessageSquareText, Send, Sparkles, Trash2, Paperclip, X, FileText, House } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { conversationStorageErrorMessage, type AssistantConversationStore, type AssistantConversationSummary, type StoredAssistantMessage } from "../lib/assistantConversations";
 import careerRobot from "../assets/career-robot.svg";
@@ -24,6 +24,7 @@ type CareerAssistantProps = {
   refreshAccessToken?: () => Promise<string | null>;
   onAuthenticationRequired: () => void;
   onSmartMatching: () => void;
+  onNavigateHome?: () => void;
   conversationStore?: AssistantConversationStore | null;
   profileName?: string;
   profileAvatarUrl?: string;
@@ -135,7 +136,7 @@ const suggestedPrompts = [
   { label: "Find jobs matching my skills", action: "matching" as const },
 ];
 
-export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationError = null, getAccessToken, refreshAccessToken, onAuthenticationRequired, onSmartMatching, conversationStore = null, profileName = "", profileAvatarUrl = "" }: CareerAssistantProps) {
+export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationError = null, getAccessToken, refreshAccessToken, onAuthenticationRequired, onSmartMatching, onNavigateHome, conversationStore = null, profileName = "", profileAvatarUrl = "" }: CareerAssistantProps) {
   const [isMobileViewport, setIsMobileViewport] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.("(max-width: 700px)").matches));
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
@@ -520,6 +521,7 @@ export default function CareerAssistant({ visible, apiBaseUrl, apiConfigurationE
           onClick={() => setMobileNavOpen((open) => !open)}
         ><Menu size={21} /></button>
         <span>Kaam-Calm</span>
+        <button type="button" className="career-assistant-mobile-home" aria-label="Home" onClick={onNavigateHome}><House size={20} /></button>
       </header>}
       <header className="career-assistant-header">
         <div><span className="career-assistant-icon"><Sparkles size={19} /></span><div><span className="career-assistant-eyebrow">YOUR CAREER WORKSPACE</span><h1 id="career-assistant-title">AI Career Assistant</h1><small>Your personal career guide</small></div></div>

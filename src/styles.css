@@ -2129,6 +2129,21 @@ a:focus-visible {
   .career-assistant-mobile-menu:hover,
   .career-assistant-mobile-menu:focus-visible { color: #fff; background: #342a56; }
   .career-assistant-mobile-menu:focus-visible { outline: 2px solid #b7a5ff; outline-offset: 2px; }
+  .career-assistant-mobile-home {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    flex: 0 0 auto;
+    place-items: center;
+    margin-left: auto;
+    border: 1px solid #393553;
+    border-radius: 11px;
+    color: #d7ccff;
+    background: #211d3b;
+  }
+  .career-assistant-mobile-home:hover,
+  .career-assistant-mobile-home:focus-visible { color: #fff; background: #342a56; }
+  .career-assistant-mobile-home:focus-visible { outline: 2px solid #b7a5ff; outline-offset: 2px; }
   .career-assistant-layout {
     position: relative;
     display: grid;

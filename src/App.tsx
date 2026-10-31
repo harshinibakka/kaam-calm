@@ -1746,6 +1746,7 @@ function App() {
             setAuthOpen(true);
           }}
           onSmartMatching={() => { navigate("home"); runRecommendedSearch(); }}
+          onNavigateHome={() => navigate("home")}
         />
       )}
     </main>

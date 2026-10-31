@@ -268,6 +268,22 @@ describe("CareerAssistant", () => {
     expect(screen.queryByRole("region", { name: "Kaam-Calm career assistant welcome" })).toBeNull();
   });
 
+  it("shows a mobile Home button and uses the existing navigation callback", async () => {
+    setViewportWidth(390);
+    const onNavigateHome = vi.fn();
+    render(<CareerAssistant visible apiBaseUrl="http://localhost:8000" getAccessToken={async () => "test-token"} onAuthenticationRequired={vi.fn()} onSmartMatching={vi.fn()} onNavigateHome={onNavigateHome} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Home" }));
+    expect(onNavigateHome).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Open career navigation" })).toBeTruthy();
+    expect(screen.getByText("Kaam-Calm")).toBeTruthy();
+  });
+
+  it.each([701, 1024, 1366])("does not add a Home button to the desktop header at %ipx", (width) => {
+    setViewportWidth(width);
+    renderAssistant();
+    expect(screen.queryByRole("button", { name: "Home" })).toBeNull();
+  });
+
   it("opens and closes the mobile navigation drawer and returns focus on Escape", async () => {
     setViewportWidth(390);
     renderAssistant();
