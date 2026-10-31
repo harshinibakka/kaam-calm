@@ -7,6 +7,9 @@ export type SmartMatchCareerProfile = {
   preferred_locations: string[];
   experience: { role: string; duration: string }[];
   work_preferences: string[];
+  education?: string[];
+  projects?: string[];
+  certifications?: string[];
 };
 
 export type SmartMatchJob = {
@@ -14,6 +17,7 @@ export type SmartMatchJob = {
   page: number;
   title: string;
   company: string;
+  provider?: "Adzuna" | "TheirStack";
 };
 
 type MatchExplanation = {
@@ -21,6 +25,9 @@ type MatchExplanation = {
   fit_summary: string;
   matching_skills: string[];
   skill_gaps: string[];
+  match_score: number;
+  recommendation: string;
+  personalized: boolean;
 };
 
 type Props = {
@@ -88,7 +95,7 @@ export default function SmartJobMatching({ apiBaseUrl, apiConfigurationError = n
         body: JSON.stringify({
           role,
           location,
-          jobs: jobs.map(({ id, page }) => ({ id, page })),
+          jobs: jobs.map(({ id, page, provider }) => ({ id, page, ...(provider && provider !== "Adzuna" ? { provider } : {}) })),
           profile_consent: includeProfile,
           ...(includeProfile ? { career_profile: careerProfile } : {}),
         }),
@@ -116,7 +123,9 @@ export default function SmartJobMatching({ apiBaseUrl, apiConfigurationError = n
         return typeof match.job_id === "string" && knownIds.has(match.job_id)
           && typeof match.fit_summary === "string"
           && Array.isArray(match.matching_skills) && match.matching_skills.every((skill) => typeof skill === "string")
-          && Array.isArray(match.skill_gaps) && match.skill_gaps.every((skill) => typeof skill === "string");
+          && Array.isArray(match.skill_gaps) && match.skill_gaps.every((skill) => typeof skill === "string")
+          && typeof match.match_score === "number" && Number.isInteger(match.match_score) && match.match_score >= 0 && match.match_score <= 100
+          && typeof match.recommendation === "string" && typeof match.personalized === "boolean";
       });
       setMatches(safeMatches);
       if (safeMatches.length === 0) setNotice("No verified match explanations were returned for these listings.");
@@ -158,7 +167,7 @@ export default function SmartJobMatching({ apiBaseUrl, apiConfigurationError = n
 
       {consentOpen && isAuthenticated && <div className="smart-matching-consent" role="group" aria-label="Career profile sharing choice">
         <strong>Choose what to share</strong>
-        <p>For a personalized explanation, Google Gemini will receive only your skills, preferred roles and locations, job titles and experience duration, and work preferences. Kaam-Calm will not send your name, contact details, address, salary, resume or CV, file names, or storage paths. This explanation is temporary and is not saved.</p>
+        <p>For a personalized explanation, Google Gemini will receive only your skills, preferred roles and locations, job titles and experience duration, selected education qualifications, project titles and descriptions, certifications, and work preferences. Kaam-Calm will not send your name, contact details, address, salary, resume or CV, file names, credential links, or storage paths. This explanation is temporary and is not saved.</p>
         <label><input type="checkbox" checked={consentChecked} onChange={(event) => setConsentChecked(event.target.checked)} /> I consent to sending these selected career details to Google Gemini for this explanation.</label>
         <div className="smart-matching-actions">
           <button className="button button-ghost" type="button" onClick={() => void explain(false)} disabled={busy}>{busy ? "Explaining…" : "Explain without profile"}</button>
@@ -175,6 +184,7 @@ export default function SmartJobMatching({ apiBaseUrl, apiConfigurationError = n
           if (!job) return null;
           return <article className="smart-matching-card" key={match.job_id}>
             <h4>{job.title} <span>at {job.company}</span></h4>
+            <p className="smart-matching-score"><strong>{match.personalized ? `${match.match_score}% match` : `${match.match_score}% search relevance`}</strong> · {match.recommendation}</p>
             <p>{match.fit_summary}</p>
             {match.matching_skills.length > 0 && <p><strong>Relevant strengths:</strong> {match.matching_skills.join(", ")}</p>}
             {match.skill_gaps.length > 0 && <p><strong>Potential skills to build:</strong> {match.skill_gaps.join(", ")}</p>}

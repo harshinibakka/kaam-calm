@@ -69,6 +69,7 @@ def install_fake_adzuna(monkeypatch, response=None, error=None):
     monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(main, "APP_ID", "test-app-id")
     monkeypatch.setattr(main, "APP_KEY", "test-app-key")
+    monkeypatch.setattr(main, "THEIRSTACK_API_KEY", "")
     return calls
 
 
@@ -350,10 +351,18 @@ def test_job_search_maps_provider_response_and_query(monkeypatch):
             "description": "Build frontend applications",
             "url": "https://jobs.example/123",
             "source": "Adzuna",
+            "original_provider": "Adzuna",
+            "provider_job_id": "123",
             "created": "2026-10-25T00:00:00Z",
             "type": "Full Time",
             "experience": "",
             "salary": "100,000 - 140,000 per year",
+            "salary_min": 100000,
+            "salary_max": 140000,
+            "salary_currency": "",
+            "workplace_type": "",
+            "skills": [],
+            "company_logo": "",
             "category": "IT Jobs",
         }
     ]
@@ -375,11 +384,12 @@ def test_job_search_maps_provider_response_and_query(monkeypatch):
 def test_missing_credentials_returns_service_unavailable_without_provider_call(monkeypatch):
     monkeypatch.setattr(main, "APP_ID", None)
     monkeypatch.setattr(main, "APP_KEY", None)
+    monkeypatch.setattr(main, "THEIRSTACK_API_KEY", "")
 
     response = TestClient(main.app).get("/api/jobs")
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Job search API credentials are not configured."
+    assert response.json()["detail"] == "No job search provider is configured. Set ADZUNA_APP_ID and ADZUNA_APP_KEY and/or THEIRSTACK_API_KEY."
 
 
 def test_provider_http_error_is_sanitized(monkeypatch):
@@ -388,7 +398,7 @@ def test_provider_http_error_is_sanitized(monkeypatch):
     response = TestClient(main.app).get("/api/jobs")
 
     assert response.status_code == 502
-    assert response.json()["detail"] == "The job provider could not complete the search."
+    assert response.json()["detail"] == "All configured job search providers are temporarily unavailable. Check the provider status and retry."
     assert "test-app-key" not in response.text
 
 
@@ -398,7 +408,7 @@ def test_provider_network_error_is_sanitized(monkeypatch):
     response = TestClient(main.app).get("/api/jobs")
 
     assert response.status_code == 502
-    assert response.json()["detail"] == "Could not connect to the job provider."
+    assert response.json()["detail"] == "All configured job search providers are temporarily unavailable. Check the provider status and retry."
     assert "test-app-key" not in response.text
 
 
@@ -408,7 +418,7 @@ def test_malformed_provider_json_is_a_gateway_error(monkeypatch):
     response = TestClient(main.app).get("/api/jobs")
 
     assert response.status_code == 502
-    assert response.json()["detail"] == "The job provider returned an invalid response."
+    assert response.json()["detail"] == "All configured job search providers are temporarily unavailable. Check the provider status and retry."
 
 
 def test_malformed_provider_payload_and_job_records_are_gateway_errors(monkeypatch):
@@ -419,7 +429,7 @@ def test_malformed_provider_payload_and_job_records_are_gateway_errors(monkeypat
     install_fake_adzuna(monkeypatch, FakeResponse(payload={"results": ["not-a-job"]}))
     response = TestClient(main.app).get("/api/jobs")
     assert response.status_code == 502
-    assert response.json()["detail"] == "The job provider returned an invalid response."
+    assert response.json()["detail"] == "All configured job search providers are temporarily unavailable. Check the provider status and retry."
 
 
 def test_unexpected_job_fields_use_safe_defaults(monkeypatch):
@@ -863,7 +873,7 @@ def test_match_explanations_reject_malformed_credentials_without_provider_calls(
 
 def test_match_explanations_without_consent_never_send_profile_data(monkeypatch, authenticated_assistant):
     install_fake_adzuna(monkeypatch, matching_adzuna_response())
-    gemini_calls = install_fake_gemini(monkeypatch, '{"matches":[{"job_id":"adzuna-1","fit_summary":"React experience aligns with the listing.","matching_skills":["React"],"skill_gaps":["TypeScript"]}]}')
+    gemini_calls = install_fake_gemini(monkeypatch, '{"matches":[{"job_id":"adzuna-1","fit_summary":"The listing aligns with this search.","matching_skills":[],"skill_gaps":["TypeScript"],"match_score":45}]}')
     response = TestClient(main.app).post("/api/assistant/match-explanations", json=smart_match_payload())
 
     assert response.status_code == 200
@@ -885,7 +895,7 @@ def test_match_explanations_reject_profile_data_when_consent_is_absent(monkeypat
 
 def test_match_explanations_send_only_allowlisted_profile_after_explicit_consent(monkeypatch, authenticated_assistant):
     install_fake_adzuna(monkeypatch, matching_adzuna_response())
-    response_json = '{"matches":[{"job_id":"adzuna-1","fit_summary":"Your React background fits the role.","matching_skills":["React"],"skill_gaps":["TypeScript"]}]}'
+    response_json = '{"matches":[{"job_id":"adzuna-1","fit_summary":"Your React background fits the role.","matching_skills":["React"],"skill_gaps":["TypeScript"],"match_score":85}]}'
     gemini_calls = install_fake_gemini(monkeypatch, response_json)
     payload = smart_match_payload(profile_consent=True, career_profile={
         "skills": ["React"], "preferred_roles": ["Frontend Developer"], "preferred_locations": ["Bengaluru"],
@@ -903,6 +913,58 @@ def test_match_explanations_send_only_allowlisted_profile_after_explicit_consent
     assert "consented_career_profile" in sent_text
     assert "https://jobs.example/adzuna-1" not in sent_text
     assert response.json()["matches"][0]["job_id"] == "adzuna-1"
+    assert response.json()["matches"][0]["recommendation"] == "Strong Match"
+    assert response.json()["matches"][0]["personalized"] is True
+
+
+def test_match_explanations_verify_theirstack_jobs_and_return_grounded_match_scores(monkeypatch, authenticated_assistant):
+    install_fake_adzuna(monkeypatch, matching_adzuna_response())
+    monkeypatch.setattr(main, "APP_ID", None)
+    monkeypatch.setattr(main, "APP_KEY", None)
+    monkeypatch.setattr(main, "THEIRSTACK_API_KEY", "test-stack-key")
+    gemini_calls = install_fake_gemini(monkeypatch, '{"matches":[{"job_id":"theirstack:77","fit_summary":"Python experience aligns with the role requirements.","matching_skills":["Python"],"skill_gaps":[],"match_score":85}]}')
+
+    class FakeTheirStackClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def get(self, url, params, headers=None):
+            assert url == "https://api.theirstack.com/v0/catalog/locations"
+            assert headers == {"Authorization": "Bearer test-stack-key"}
+            location = params["name"]
+            return FakeResponse(payload=[{"id": 123, "name": location, "display_name": location}])
+
+        async def post(self, url, json, headers):
+            assert url == "https://api.theirstack.com/v1/jobs/search"
+            assert json["job_location_or"] == [{"id": 123}]
+            assert headers == {"Authorization": "Bearer test-stack-key"}
+            return FakeResponse(payload={"data": [{
+                "id": 77, "job_title": "Python Engineer", "company": "Example Co",
+                "location": "Bengaluru", "description": "Build Python services.",
+                "final_url": "https://jobs.example/private-link", "technology_slugs": ["python"],
+            }], "metadata": {}})
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeTheirStackClient)
+    payload = smart_match_payload(
+        jobs=[{"id": "theirstack:77", "page": 1, "provider": "TheirStack"}],
+        profile_consent=True,
+        career_profile={"skills": ["Python"]},
+    )
+    response = TestClient(main.app).post("/api/assistant/match-explanations", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["matches"][0]["job_id"] == "theirstack:77"
+    assert response.json()["matches"][0]["match_score"] == 85
+    assert response.json()["matches"][0]["recommendation"] == "Strong Match"
+    sent_text = " ".join(part.text for turn in gemini_calls[0]["contents"] for part in turn.parts)
+    assert "Python" in sent_text
+    assert "https://jobs.example/private-link" not in sent_text
 
 
 @pytest.mark.parametrize("private_field", ["full_name", "email", "phone", "address", "salary_history", "resume_path", "resume_file_name"])

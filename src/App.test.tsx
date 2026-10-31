@@ -245,7 +245,7 @@ describe("job search flows", () => {
     supabaseMockState.configuration = "configured";
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse({ jobs: [job("adzuna-1", "Frontend Developer")], has_more: false }))
-      .mockResolvedValueOnce(jsonResponse({ matches: [{ job_id: "adzuna-1", fit_summary: "React matches this Adzuna listing.", matching_skills: ["React"], skill_gaps: ["TypeScript"] }] }));
+      .mockResolvedValueOnce(jsonResponse({ matches: [{ job_id: "adzuna-1", fit_summary: "React matches this Adzuna listing.", matching_skills: ["React"], skill_gaps: ["TypeScript"], match_score: 85, recommendation: "Strong Match", personalized: true }] }));
     render(<App />);
     await screen.findByRole("region", { name: "Your job search dashboard" });
     expect(fetch).not.toHaveBeenCalled();
@@ -270,6 +270,7 @@ describe("job search flows", () => {
     expect(body.career_profile.experience).toEqual([{ role: "UI Engineer", duration: "3 years" }]);
     expect(JSON.stringify(body.career_profile)).not.toMatch(/Private Name|Private Address|Private Company|1000000|900000|private\.pdf|resume_path|person@example\.com|415/);
     expect(await screen.findByText("React matches this Adzuna listing.")).toBeTruthy();
+    expect(screen.getByText(/85% match/)).toBeTruthy();
   });
 
   it("distinguishes Recommended Jobs and AI Career icons and preserves matching state when returning", async () => {
@@ -638,6 +639,31 @@ describe("job search flows", () => {
     expect(requestedUrl.searchParams.get("page")).toBe("1");
   });
 
+  it("renders one combined feed with distinct provider labels and partial-provider status", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({
+      count: 2,
+      has_more: false,
+      source: "Adzuna + TheirStack",
+      providers: {
+        Adzuna: { status: "available" },
+        TheirStack: { status: "rate_limited", message: "TheirStack is rate limited; showing available Adzuna results." },
+      },
+      jobs: [
+        job("a-1", "Adzuna Engineer"),
+        { ...job("theirstack:2", "Stack Engineer"), source: "TheirStack", workplace_type: "Hybrid", skills: ["python"] },
+      ],
+    }));
+    render(<App />);
+    await submitSearch();
+    expect(await screen.findByRole("button", { name: "Adzuna Engineer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stack Engineer" })).toBeTruthy();
+    expect(screen.getByText("Live results · Adzuna + TheirStack")).toBeTruthy();
+    expect(screen.getByText("TheirStack is rate limited; showing available Adzuna results.")).toBeTruthy();
+    expect([...document.querySelectorAll(".job-metadata")].some((metadata) => metadata.textContent?.includes("Hybrid"))).toBe(true);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Match the first 5 jobs with AI" }));
+    expect(await screen.findByRole("button", { name: "Sign in to explain matches" })).toBeTruthy();
+  });
+
   it("shows and clears the loading state", async () => {
     let resolveResponse!: (response: Response) => void;
     vi.mocked(fetch).mockReturnValue(new Promise((resolve) => {
@@ -735,12 +761,31 @@ describe("job search flows", () => {
 
     expect(screen.getByRole("button", { name: "Graduate Software Intern" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Senior Engineer" })).toBeNull();
-    expect(screen.getByText(/Experience uses text keywords, not structured provider data/)).toBeTruthy();
+    expect(screen.getByText(/experience can use listed seniority and text keywords/i)).toBeTruthy();
 
     await userEvent.setup().click(
       within(screen.getByRole("group", { name: "Filter jobs by type" })).getByRole("button", { name: "Remote" })
     );
     expect(screen.getByRole("button", { name: "Graduate Software Intern" })).toBeTruthy();
+  });
+
+  it("filters combined jobs by workplace, company and listed skills", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ jobs: [
+      { ...job("remote", "Remote Python Engineer"), company: "Example Labs", workplace_type: "Remote", skills: ["python", "postgresql"] },
+      { ...job("hybrid", "Hybrid Designer"), company: "Design Co", workplace_type: "Hybrid", skills: ["figma"] },
+    ], has_more: false }));
+    render(<App />);
+    await submitSearch();
+    await screen.findByRole("button", { name: "Remote Python Engineer" });
+    await userEvent.setup().selectOptions(screen.getByLabelText("Workplace"), "Remote");
+    expect(screen.getByRole("button", { name: "Remote Python Engineer" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Hybrid Designer" })).toBeNull();
+    await userEvent.setup().type(screen.getByLabelText("Company"), "example");
+    await userEvent.setup().type(screen.getByLabelText("Skills"), "python");
+    expect(screen.getByRole("button", { name: "Remote Python Engineer" })).toBeTruthy();
+    await userEvent.setup().clear(screen.getByLabelText("Skills"));
+    await userEvent.setup().type(screen.getByLabelText("Skills"), "ruby");
+    expect(screen.queryByRole("button", { name: "Remote Python Engineer" })).toBeNull();
   });
 
   it("requires authentication to save and explains missing Supabase configuration", async () => {

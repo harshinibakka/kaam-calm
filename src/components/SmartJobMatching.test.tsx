@@ -10,6 +10,9 @@ const profile: SmartMatchCareerProfile = {
   preferred_locations: ["Bengaluru"],
   experience: [{ role: "UI Engineer", duration: "3 years" }],
   work_preferences: ["Remote"],
+  education: ["BSc · Computer Science · 2022"],
+  projects: ["Portfolio · Built a React app · react"],
+  certifications: ["AWS Cloud Practitioner"],
 };
 const jobs = [{ id: "adzuna-1", page: 1, title: "Frontend Developer", company: "Example Co" }];
 
@@ -37,7 +40,7 @@ describe("Smart Job Matching", () => {
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
   it("does not call the API automatically and can explain without sending profile data", async () => {
-    vi.mocked(fetch).mockResolvedValue(response({ matches: [{ job_id: "adzuna-1", fit_summary: "React aligns with the listing.", matching_skills: ["React"], skill_gaps: [] }] }));
+    vi.mocked(fetch).mockResolvedValue(response({ matches: [{ job_id: "adzuna-1", fit_summary: "React aligns with the listing.", matching_skills: ["React"], skill_gaps: [], match_score: 80, recommendation: "Strong Match", personalized: true }] }));
     renderMatcher();
     expect(fetch).not.toHaveBeenCalled();
     const user = userEvent.setup();
@@ -54,10 +57,22 @@ describe("Smart Job Matching", () => {
     expect(body).not.toHaveProperty("career_profile");
     expect(body.jobs).toEqual([{ id: "adzuna-1", page: 1 }]);
     expect(await screen.findByText("React aligns with the listing.")).toBeTruthy();
+    expect(screen.getByText(/80% match/)).toBeTruthy();
+  });
+
+  it("includes the TheirStack source so the backend verifies the correct provider listing", async () => {
+    vi.mocked(fetch).mockResolvedValue(response({ matches: [{ job_id: "theirstack:77", fit_summary: "Python fits the listing.", matching_skills: ["Python"], skill_gaps: [], match_score: 75, recommendation: "Good Match", personalized: false }] }));
+    renderMatcher({ jobs: [{ ...jobs[0], id: "theirstack:77", provider: "TheirStack" }] });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Explain matches" }));
+    await user.click(screen.getByRole("button", { name: "Explain without profile" }));
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
+    expect(body.jobs).toEqual([{ id: "theirstack:77", page: 1, provider: "TheirStack" }]);
+    expect(await screen.findByText("Python fits the listing.")).toBeTruthy();
   });
 
   it("sends only the narrow career profile after an explicit unchecked-by-default consent", async () => {
-    vi.mocked(fetch).mockResolvedValue(response({ matches: [{ job_id: "adzuna-1", fit_summary: "Good fit.", matching_skills: [], skill_gaps: [] }] }));
+    vi.mocked(fetch).mockResolvedValue(response({ matches: [{ job_id: "adzuna-1", fit_summary: "Good fit.", matching_skills: [], skill_gaps: [], match_score: 85, recommendation: "Strong Match", personalized: true }] }));
     renderMatcher();
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Explain matches" }));
@@ -69,7 +84,10 @@ describe("Smart Job Matching", () => {
     const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
     expect(body.profile_consent).toBe(true);
     expect(body.career_profile).toEqual(profile);
-    expect(JSON.stringify(body)).not.toMatch(/full_name|email|phone|address|salary|resume|storage_path/i);
+    expect(JSON.stringify(body)).not.toMatch(/full_name|email|phone|address|salary|resume|storage_path|credential.*url/i);
+    expect(body.career_profile.education).toEqual(profile.education);
+    expect(body.career_profile.projects).toEqual(profile.projects);
+    expect(body.career_profile.certifications).toEqual(profile.certifications);
   });
 
   it("requires sign in and does not fetch without a current access token", async () => {

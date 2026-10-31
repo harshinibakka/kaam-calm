@@ -54,12 +54,18 @@ type Job = {
   experience?: string;
   skills?: string[];
   salary?: string;
+  salary_min?: number | null;
+  salary_max?: number | null;
+  salary_currency?: string;
+  workplace_type?: string;
+  company_logo?: string;
   page?: number;
 };
 
 type JobsResponse = {
   jobs: unknown[];
   has_more?: boolean;
+  providers?: Record<string, { status: string; message?: string }>;
 };
 
 type DashboardView = "home" | "applied" | "ai-career" | "profile" | "notifications" | "settings" | "help";
@@ -97,6 +103,7 @@ function readJobsResponse(value: unknown): JobsResponse {
   return {
     jobs: value.jobs,
     has_more: typeof value.has_more === "boolean" ? value.has_more : undefined,
+    providers: isRecord(value.providers) ? value.providers as JobsResponse["providers"] : undefined,
   };
 }
 
@@ -146,6 +153,11 @@ function mapJob(value: unknown, index: number, page: number): Job {
       ? value.skills.filter((skill): skill is string => typeof skill === "string")
       : [],
     salary: textField(value.salary),
+    salary_min: typeof value.salary_min === "number" && Number.isFinite(value.salary_min) ? value.salary_min : null,
+    salary_max: typeof value.salary_max === "number" && Number.isFinite(value.salary_max) ? value.salary_max : null,
+    salary_currency: textField(value.salary_currency),
+    workplace_type: textField(value.workplace_type),
+    company_logo: textField(value.company_logo),
     page,
   };
 }
@@ -170,6 +182,26 @@ function mapSmartMatchCareerProfile(value: unknown): SmartMatchCareerProfile {
     preferred_locations: strings(value.preferred_locations, 5, 100),
     experience,
     work_preferences: [cappedText(value.employment_type, 50), cappedText(value.work_mode, 50)].filter(Boolean),
+    education: Array.isArray(value.education) ? value.education.flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const qualification = cappedText(item.qualification, 100);
+      const field = cappedText(item.field_of_study, 100);
+      const year = cappedText(item.graduation_year, 12);
+      const summary = [qualification, field, year].filter(Boolean).join(" · ");
+      return summary ? [summary] : [];
+    }).slice(0, 5) : [],
+    projects: Array.isArray(value.projects) ? value.projects.flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const title = cappedText(item.title, 100);
+      const description = cappedText(item.description, 240);
+      const technologies = cappedText(item.technologies, 120);
+      const summary = [title, description, technologies].filter(Boolean).join(" · ");
+      return summary ? [summary] : [];
+    }).slice(0, 5) : [],
+    certifications: Array.isArray(value.certifications) ? value.certifications.flatMap((item) => {
+      const name = isRecord(item) ? cappedText(item.name, 100) : typeof item === "string" ? item.trim().slice(0, 100) : "";
+      return name ? [name] : [];
+    }).slice(0, 8) : [],
   };
 }
 
@@ -178,14 +210,48 @@ function shouldLoadMore(response: JobsResponse, resultCount: number, page: numbe
 }
 
 function appendUniqueJobs(existing: Job[], incoming: Job[]) {
-  const seenIds = new Set(existing.map((job) => job.id));
-  const unique: Job[] = [];
+  const result = [...existing];
   for (const job of incoming) {
-    if (seenIds.has(job.id)) continue;
-    seenIds.add(job.id);
-    unique.push(job);
+    if (result.some((previous) => previous.id === job.id || sameJob(previous, job))) continue;
+    result.push(job);
   }
-  return [...existing, ...unique];
+  return result;
+}
+
+function sameJob(left: Job, right: Job) {
+  const canonical = (value: string) => {
+    try {
+      const url = new URL(value);
+      if (!["http:", "https:"].includes(url.protocol)) return "";
+      url.hash = "";
+      for (const key of [...url.searchParams.keys()]) if (/^(utm_|fbclid$|gclid$|ref$|source$)/i.test(key)) url.searchParams.delete(key);
+      url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+      url.pathname = url.pathname.replace(/\/$/, "") || "/";
+      return url.toString();
+    } catch { return ""; }
+  };
+  const leftUrl = canonical(left.url);
+  const rightUrl = canonical(right.url);
+  if (leftUrl && rightUrl) return leftUrl === rightUrl;
+  const normalize = (value: string) => value.toLocaleLowerCase().replace(/\s+/g, " ").trim();
+  const company = normalize(left.company);
+  const title = normalize(left.title);
+  const location = normalize(left.location);
+  return Boolean(company && title && location) && company === normalize(right.company) && title === normalize(right.title) && location === normalize(right.location);
+}
+
+function responseProviderMessages(response: JobsResponse) {
+  return Object.values(response.providers ?? {}).flatMap((provider) =>
+    provider && provider.status !== "available" && typeof provider.message === "string" ? [provider.message] : [],
+  );
+}
+
+async function searchFailure(response: Response) {
+  try {
+    const body: unknown = await response.json();
+    if (isRecord(body) && typeof body.detail === "string" && body.detail.length <= 300) return body.detail;
+  } catch { /* Use a safe generic response for an empty or non-JSON body. */ }
+  return `Job search failed (${response.status})`;
 }
 
 function mapSavedJob(value: unknown): Job {
@@ -198,6 +264,13 @@ function App() {
   const [location, setLocation] = useState("");
   const [experience, setExperience] = useState("Any experience");
   const [jobType, setJobType] = useState("All types");
+  const [workplaceType, setWorkplaceType] = useState("All workplaces");
+  const [postedWithinDays, setPostedWithinDays] = useState("Any time");
+  const [companyQuery, setCompanyQuery] = useState("");
+  const [skillsQuery, setSkillsQuery] = useState("");
+  const [salaryMinimum, setSalaryMinimum] = useState("");
+  const [salaryMaximum, setSalaryMaximum] = useState("");
+  const [salaryCurrency, setSalaryCurrency] = useState("Any currency");
   const [searched, setSearched] = useState(false);
   const [savedJobs, setSavedJobs] = useState<Job[]>([]);
   const [savedJobsLoading, setSavedJobsLoading] = useState(false);
@@ -210,6 +283,7 @@ function App() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [providerMessages, setProviderMessages] = useState<string[]>([]);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -227,6 +301,7 @@ function App() {
   const [showProfile, setShowProfile] = useState(false);
   const [showApplied, setShowApplied] = useState(false);
   const [showAICareer, setShowAICareer] = useState(false);
+  const [aiMatchingOpen, setAIMatchingOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -317,7 +392,7 @@ function App() {
       setProfileAvatarPath("");
       setProfilePreferredRole("");
       setProfilePreferredRoles([]); setProfilePreferredLocations([]); setProfileExpectedSalary("");
-      setMatchCareerProfile({ skills: [], preferred_roles: [], preferred_locations: [], experience: [], work_preferences: [] });
+      setMatchCareerProfile({ skills: [], preferred_roles: [], preferred_locations: [], experience: [], work_preferences: [], education: [], projects: [], certifications: [] });
       setMatchSearchContext({ role: "", location: "" });
       setProfileCompletion(null);
       setProfileSummaryError(false);
@@ -329,7 +404,7 @@ function App() {
     setProfileAvatarPath("");
     setProfilePreferredRole("");
     setProfilePreferredRoles([]); setProfilePreferredLocations([]); setProfileExpectedSalary("");
-    setMatchCareerProfile({ skills: [], preferred_roles: [], preferred_locations: [], experience: [], work_preferences: [] });
+    setMatchCareerProfile({ skills: [], preferred_roles: [], preferred_locations: [], experience: [], work_preferences: [], education: [], projects: [], certifications: [] });
     setProfileCompletion(null);
     setProfileSummaryError(false);
     void (async () => {
@@ -379,6 +454,7 @@ function App() {
 
   const navigate = (view: DashboardView) => {
     setMenuOpen(false);
+    setAIMatchingOpen(false);
     setSelectedJob(null);
     setShowSavedJobs(false);
     setShowProfile(view === "profile");
@@ -528,7 +604,22 @@ function App() {
     const description = (job.description || "").toLowerCase();
     const title = (job.title || "").toLowerCase();
     const type = (job.type || "").toLowerCase();
-    const searchableText = `${title} ${description} ${type}`;
+    const searchableText = `${title} ${description} ${type} ${job.experience ?? ""} ${job.workplace_type ?? ""}`;
+
+    if (companyQuery.trim() && !job.company.toLowerCase().includes(companyQuery.trim().toLowerCase())) return false;
+    if (skillsQuery.trim() && !job.skills?.some((skill) => skill.toLowerCase().includes(skillsQuery.trim().toLowerCase()))) return false;
+    if (workplaceType !== "All workplaces" && job.workplace_type !== workplaceType) return false;
+    if (postedWithinDays !== "Any time") {
+      const posted = job.created ? Date.parse(job.created) : Number.NaN;
+      if (!Number.isFinite(posted) || Date.now() - posted > Number(postedWithinDays) * 86400000) return false;
+    }
+    const minSalary = salaryMinimum === "" ? null : Number(salaryMinimum);
+    const maxSalary = salaryMaximum === "" ? null : Number(salaryMaximum);
+    if (minSalary !== null || maxSalary !== null) {
+      if (salaryCurrency === "Any currency" || job.salary_currency !== salaryCurrency) return false;
+      if (minSalary !== null && (job.salary_max !== null && job.salary_max !== undefined ? job.salary_max < minSalary : job.salary_min === null || job.salary_min === undefined || job.salary_min < minSalary)) return false;
+      if (maxSalary !== null && (job.salary_min !== null && job.salary_min !== undefined ? job.salary_min > maxSalary : job.salary_max === null || job.salary_max === undefined || job.salary_max > maxSalary)) return false;
+    }
 
     if (experience === "Fresher") {
       const fresherMatch =
@@ -714,7 +805,9 @@ function App() {
     setLoading(true);
     setLoadingMore(false);
     setError("");
+    setProviderMessages([]);
     setJobs([]);
+    setAIMatchingOpen(false);
     const timeoutId = window.setTimeout(() => controller.abort(new DOMException("Search timed out", "TimeoutError")), 35_000);
 
     document.getElementById("jobs")?.scrollIntoView({
@@ -734,15 +827,14 @@ function App() {
       );
       if (controller.signal.aborted || activeRequestRef.current !== controller) return;
 
-      if (!response.ok) {
-        throw new Error(`Job search failed (${response.status})`);
-      }
+      if (!response.ok) throw new Error(await searchFailure(response));
 
       const data = readJobsResponse(await response.json());
       if (controller.signal.aborted || activeRequestRef.current !== controller) return;
       const mappedJobs = data.jobs.map((item, index) => mapJob(item, index, 1));
 
       setJobs(mappedJobs);
+      setProviderMessages(responseProviderMessages(data));
       setCurrentPage(1);
       setHasMore(shouldLoadMore(data, mappedJobs.length, 1));
 
@@ -750,7 +842,7 @@ function App() {
       if (activeRequestRef.current === controller && controller.signal.aborted && controller.signal.reason?.name === "TimeoutError") {
         setError("Job search took too long. Check your connection and retry.");
       } else if (activeRequestRef.current === controller && !(requestError instanceof Error && requestError.name === "AbortError")) {
-        setError(requestError instanceof Error && requestError.message.startsWith("Job search failed (503)") ? "Job search is temporarily unavailable because the provider is not configured." : "Could not load jobs. Check your connection and retry.");
+        setError(requestError instanceof Error && requestError.message !== "Job search failed (502)" && requestError.message !== "Job search failed (503)" ? requestError.message : "Could not load jobs. Check your connection and retry.");
       }
     } finally {
       window.clearTimeout(timeoutId);
@@ -789,13 +881,14 @@ function App() {
         signal: controller.signal,
       });
       if (controller.signal.aborted || activeRequestRef.current !== controller) return;
-      if (!response.ok) throw new Error(`Job search failed (${response.status})`);
+      if (!response.ok) throw new Error(await searchFailure(response));
 
       const data = readJobsResponse(await response.json());
       if (controller.signal.aborted || activeRequestRef.current !== controller) return;
       const mappedJobs = data.jobs.map((item, index) => mapJob(item, index, nextPage));
 
       setJobs((current) => appendUniqueJobs(current, mappedJobs));
+      setProviderMessages((current) => [...new Set([...current, ...responseProviderMessages(data)])]);
       setCurrentPage(nextPage);
       setHasMore(shouldLoadMore(data, mappedJobs.length, nextPage));
     } catch (requestError) {
@@ -836,6 +929,14 @@ function App() {
     setLocation("");
     setExperience("Any experience");
     setJobType("All types");
+    setWorkplaceType("All workplaces");
+    setPostedWithinDays("Any time");
+    setCompanyQuery("");
+    setSkillsQuery("");
+    setSalaryMinimum("");
+    setSalaryMaximum("");
+    setSalaryCurrency("Any currency");
+    setProviderMessages([]);
     setJobs([]);
     setLoading(false);
     setLoadingMore(false);
@@ -1328,10 +1429,34 @@ function App() {
                 ))}
               </div>
 
+              <label className="filter-label" htmlFor="workplace-filter">Workplace</label>
+              <select id="workplace-filter" className="filter-select" value={workplaceType} onChange={(event) => setWorkplaceType(event.target.value)}>
+                <option>All workplaces</option><option>Remote</option><option>Hybrid</option><option>On-site</option>
+              </select>
+              <label className="filter-label" htmlFor="posted-filter">Posted</label>
+              <select id="posted-filter" className="filter-select" value={postedWithinDays} onChange={(event) => setPostedWithinDays(event.target.value)}>
+                <option>Any time</option><option value="1">Past day</option><option value="7">Past week</option><option value="30">Past month</option><option value="90">Past 3 months</option>
+              </select>
+              <label className="filter-label" htmlFor="company-filter">Company</label>
+              <input id="company-filter" className="filter-select" value={companyQuery} onChange={(event) => setCompanyQuery(event.target.value)} placeholder="Filter company" />
+              <label className="filter-label" htmlFor="skills-filter">Skills</label>
+              <input id="skills-filter" className="filter-select" value={skillsQuery} onChange={(event) => setSkillsQuery(event.target.value)} placeholder="Filter listed skills" />
+              <div className="filter-label">Salary range (provider currency)</div>
+              <label className="filter-label" htmlFor="salary-currency-filter">Currency</label>
+              <select id="salary-currency-filter" className="filter-select" value={salaryCurrency} onChange={(event) => setSalaryCurrency(event.target.value)}>
+                <option>Any currency</option>
+                {[...new Set(jobs.map((job) => job.salary_currency).filter(Boolean))].sort().map((currency) => <option key={currency}>{currency}</option>)}
+              </select>
+              <div className="salary-filter-range">
+                <input aria-label="Minimum salary" className="filter-select" type="number" min="0" value={salaryMinimum} onChange={(event) => setSalaryMinimum(event.target.value)} placeholder="Minimum" />
+                <input aria-label="Maximum salary" className="filter-select" type="number" min="0" value={salaryMaximum} onChange={(event) => setSalaryMaximum(event.target.value)} placeholder="Maximum" />
+              </div>
+              {(salaryMinimum || salaryMaximum) && salaryCurrency === "Any currency" && <p className="filter-note">Choose a currency to compare salary amounts.</p>}
+
               <div className="filter-note">
                 <Sparkles size={16} />
-                Filters apply to loaded listings. Experience uses text
-                keywords, not structured provider data.
+                Filters apply to loaded listings. Workplace, salary and skill
+                filters need provider fields; experience can use listed seniority and text keywords.
               </div>
 
               <button
@@ -1351,19 +1476,24 @@ function App() {
                 </span>
 
                 <span className="sort-label">
-                  {recommendationMode && !showSavedJobs ? "Recommendations · Adzuna" : showSavedJobs ? "Saved jobs" : jobs.length > 0
-                    ? "Live results · Adzuna"
+                  {recommendationMode && !showSavedJobs ? `Recommendations · ${[...new Set(jobs.map((job) => job.source))].join(" + ")}` : showSavedJobs ? "Saved jobs" : jobs.length > 0
+                    ? `Live results · ${[...new Set(jobs.map((job) => job.source))].join(" + ")}`
                     : "Search to load live jobs"}
                 </span>
               </div>
 
               {recommendationMode && !showSavedJobs && <p className="recommendation-note">Recommendations prioritize your saved roles and locations. Salary is compared only when a listing includes annual salary data. These are suggestions, not guaranteed matches.</p>}
+              {providerMessages.length > 0 && <div className="provider-status-notice" role="status">{providerMessages.map((message) => <p key={message}>{message}</p>)}</div>}
 
-              {recommendationMode && !showSavedJobs && !loading && filteredJobs.length > 0 && <SmartJobMatching
+              {!recommendationMode && !showSavedJobs && !loading && filteredJobs.length > 0 && <button className="button button-ghost ai-job-match-trigger" type="button" onClick={() => setAIMatchingOpen((open) => !open)} aria-expanded={aiMatchingOpen}>
+                <Sparkles size={16} /> {aiMatchingOpen ? "Close AI job matching" : "Match the first 5 jobs with AI"}
+              </button>}
+
+              {(recommendationMode || aiMatchingOpen) && !showSavedJobs && !loading && filteredJobs.length > 0 && <SmartJobMatching
                 key={`${matchSearchContext.role}|${matchSearchContext.location}|${filteredJobs.slice(0, 5).map((job) => `${job.page}:${job.id}`).join(",")}`}
                 apiBaseUrl={API_BASE_URL}
                 apiConfigurationError={apiConfiguration.error}
-                jobs={filteredJobs.slice(0, 5).map(({ id, page, title, company }) => ({ id, page: page ?? 1, title, company }))}
+                jobs={filteredJobs.slice(0, 5).map(({ id, page, title, company, source }) => ({ id, page: page ?? 1, title, company, provider: source === "TheirStack" ? "TheirStack" as const : "Adzuna" as const }))}
                 role={matchSearchContext.role}
                 location={matchSearchContext.location}
                 careerProfile={matchCareerProfile}
@@ -1374,7 +1504,7 @@ function App() {
                   return sessionError ? null : data.session?.access_token ?? null;
                 }}
                 onAuthenticationRequired={() => openAuth("sign_in", "Sign in to get personalized job match explanations.")}
-                onBackToCareerTools={() => navigate("ai-career")}
+                onBackToCareerTools={() => recommendationMode ? navigate("ai-career") : setAIMatchingOpen(false)}
               />}
 
               {loading && (
@@ -1399,7 +1529,9 @@ function App() {
                         ["violet", "blue", "pink"][index % 3]
                       }`}
                     >
-                      <Building2 size={23} />
+                      {job.company_logo && /^https:\/\//i.test(job.company_logo)
+                        ? <img src={job.company_logo} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                        : <Building2 size={23} />}
                     </div>
 
                     <div className="job-info">
@@ -1452,6 +1584,9 @@ function App() {
                             <Clock3 size={14} /> {job.experience}
                           </span>
                         )}
+                        {job.workplace_type && <span><Globe2 size={14} /> {job.workplace_type}</span>}
+                        {job.salary && <span><Wallet size={14} /> {job.salary}</span>}
+                        {job.created && <span><CalendarDays size={14} /> {job.created}</span>}
                       </div>
 
                       {job.description && (
