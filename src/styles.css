@@ -1098,6 +1098,7 @@ a:focus-visible {
 }
 
 @media (max-width: 760px) {
+  .jobs-layout:not(.mobile-filters-open) .filter-card { display: none; }
   .brand {
     font-size: 20px;
   }
@@ -1245,6 +1246,8 @@ a:focus-visible {
     gap: 13px;
   }
 }
+
+.filter-mobile-toggle, .filter-sheet-close, .filter-sheet-actions { display: none; }
 
 @media (max-width: 420px) {
   .job-card {
@@ -1782,6 +1785,24 @@ a:focus-visible {
 .app-shell[data-theme="dark"] .dashboard-icon { color: #c3b5ff; background: #2b2744; }
 .app-shell[data-theme="dark"] .mobile-bottom-nav button { color: #b7bdd0; }
 .app-shell[data-theme="dark"] .mobile-bottom-nav button[aria-current="page"] { color: #c3b5ff; }
+
+@media (max-width: 760px) {
+  .filter-mobile-toggle { display: inline-flex; align-items: center; justify-self: start; gap: 9px; min-height: 42px; margin: -2px 0 2px; padding-inline: 14px; border-color: #d8d0ff; color: #6142e5; background: #f8f6ff; }
+  .filter-count-badge { display: inline-grid; min-width: 21px; height: 21px; place-items: center; padding: 0 5px; border-radius: 999px; color: #fff; background: #6142e5; font-size: 11px; font-weight: 700; }
+  .jobs-layout.mobile-filters-open::before { position: fixed; z-index: 1190; inset: 0; content: ""; background: #1210208c; }
+  .jobs-layout .filter-card,
+  .jobs-layout:not(.mobile-filters-open) .filter-card { display: none; }
+  .jobs-layout.mobile-filters-open .filter-card { position: fixed; z-index: 1195; right: 0; bottom: calc(62px + env(safe-area-inset-bottom)); left: 0; display: block; max-height: min(78dvh, 720px); padding: 20px 18px 16px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid #ded8f2; border-radius: 20px 20px 0 0; background: #fff; box-shadow: 0 -14px 40px #170d3a30; }
+  .filter-heading { position: sticky; z-index: 1; top: -20px; margin: -2px -2px 0; padding: 4px 2px 12px; background: inherit; }
+  .filter-heading h3 { font-size: 15px; }
+  .filter-sheet-close { display: inline-grid; width: 36px; height: 36px; place-items: center; margin-left: auto; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: transparent; }
+  .jobs-layout.mobile-filters-open .reset-button { display: none; }
+  .filter-sheet-actions { position: sticky; bottom: -16px; display: flex; gap: 10px; margin: 18px -18px -16px; padding: 12px 18px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: inherit; }
+  .filter-sheet-actions .button { flex: 1; min-height: 43px; justify-content: center; }
+  .app-shell[data-theme="dark"] .filter-mobile-toggle { border-color: #514577; color: #ded6ff; background: #28233c; }
+  .app-shell[data-theme="dark"] .filter-count-badge { color: #1b1730; background: #c3b5ff; }
+  .app-shell[data-theme="dark"] .jobs-layout.mobile-filters-open .filter-card { border-color: #46405f; background: #1d2133; }
+}
 .app-shell[data-theme="dark"] .auth-description,
 .app-shell[data-theme="dark"] .auth-form label { color: #c5c9d8; }
 .app-shell[data-theme="dark"] .auth-form input { color: var(--ink); background: #171b2b; border-color: #43485f; }

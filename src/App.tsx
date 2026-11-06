@@ -271,6 +271,8 @@ function App() {
   const [salaryMinimum, setSalaryMinimum] = useState("");
   const [salaryMaximum, setSalaryMaximum] = useState("");
   const [salaryCurrency, setSalaryCurrency] = useState("Any currency");
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const mobileFilterTriggerRef = useRef<HTMLButtonElement>(null);
   const [searched, setSearched] = useState(false);
   const [savedJobs, setSavedJobs] = useState<Job[]>([]);
   const [savedJobsLoading, setSavedJobsLoading] = useState(false);
@@ -488,6 +490,18 @@ function App() {
   };
 
   useEffect(() => () => activeRequestRef.current?.abort(), []);
+
+  useEffect(() => {
+    if (!mobileFiltersOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileFiltersOpen(false);
+        mobileFilterTriggerRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [mobileFiltersOpen]);
 
   useEffect(() => {
     const supabaseClient = supabase;
@@ -922,11 +936,17 @@ function App() {
     } finally { setApplicationBusy(false); }
   };
 
-  const resetSearch = () => {
-    activeRequestRef.current?.abort();
-    activeRequestRef.current = null;
-    setRole("");
-    setLocation("");
+  const activeFilterCount = [
+    experience !== "Any experience",
+    jobType !== "All types",
+    workplaceType !== "All workplaces",
+    postedWithinDays !== "Any time",
+    Boolean(companyQuery.trim()),
+    Boolean(skillsQuery.trim()),
+    Boolean(salaryMinimum || salaryMaximum),
+  ].filter(Boolean).length;
+
+  const resetFilters = () => {
     setExperience("Any experience");
     setJobType("All types");
     setWorkplaceType("All workplaces");
@@ -936,6 +956,14 @@ function App() {
     setSalaryMinimum("");
     setSalaryMaximum("");
     setSalaryCurrency("Any currency");
+  };
+
+  const resetSearch = () => {
+    activeRequestRef.current?.abort();
+    activeRequestRef.current = null;
+    setRole("");
+    setLocation("");
+    resetFilters();
     setProviderMessages([]);
     setJobs([]);
     setLoading(false);
@@ -1390,11 +1418,12 @@ function App() {
             </article>
           </div>
         ) : (
-          <div className="jobs-layout">
-            <aside className="filter-card">
+          <div className={`jobs-layout${mobileFiltersOpen ? " mobile-filters-open" : ""}`}>
+            <aside id="job-filter-panel" className="filter-card" role={mobileFiltersOpen ? "dialog" : undefined} aria-modal={mobileFiltersOpen || undefined} aria-labelledby={mobileFiltersOpen ? "job-filter-title" : undefined}>
               <div className="filter-heading">
                 <Globe2 size={18} />
-                <h3>Refine your search</h3>
+                <h3 id="job-filter-title">Refine your search</h3>
+                <button className="filter-sheet-close" type="button" aria-label="Close filters" onClick={() => setMobileFiltersOpen(false)}><X size={19} /></button>
               </div>
 
               <p>Find opportunities that fit your journey.</p>
@@ -1462,10 +1491,14 @@ function App() {
               <button
                 type="button"
                 className="reset-button"
-                onClick={resetSearch}
+                onClick={() => window.matchMedia("(max-width: 760px)").matches ? resetFilters() : resetSearch()}
               >
                 Reset filters
               </button>
+              <div className="filter-sheet-actions">
+                <button type="button" className="button button-ghost" onClick={resetFilters}>Reset filters</button>
+                <button type="button" className="button button-primary" onClick={() => setMobileFiltersOpen(false)}>Apply filters</button>
+              </div>
             </aside>
 
             <div className="job-results">
@@ -1481,6 +1514,8 @@ function App() {
                     : "Search to load live jobs"}
                 </span>
               </div>
+
+              <button ref={mobileFilterTriggerRef} className="button button-ghost filter-mobile-toggle" type="button" aria-expanded={mobileFiltersOpen} aria-controls="job-filter-panel" onClick={() => setMobileFiltersOpen(true)}><SlidersHorizontal size={17} /> Filters{activeFilterCount > 0 && <span className="filter-count-badge" aria-label={`${activeFilterCount} active filters`}>{activeFilterCount}</span>}</button>
 
               {recommendationMode && !showSavedJobs && <p className="recommendation-note">Recommendations prioritize your saved roles and locations. Salary is compared only when a listing includes annual salary data. These are suggestions, not guaranteed matches.</p>}
               {providerMessages.length > 0 && <div className="provider-status-notice" role="status">{providerMessages.map((message) => <p key={message}>{message}</p>)}</div>}

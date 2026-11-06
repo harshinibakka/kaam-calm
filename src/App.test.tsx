@@ -230,6 +230,25 @@ describe("job search flows", () => {
     expect(new URL(String(vi.mocked(fetch).mock.calls[0][0])).pathname).toBe("/api/jobs");
   });
 
+  it("opens the existing filters from the results toolbar and retains selections until applied", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ jobs: [job("filter-1", "Frontend Engineer", "Full-time role")], has_more: false }));
+    render(<App />);
+    await submitSearch();
+
+    const user = userEvent.setup();
+    const filtersButton = await screen.findByRole("button", { name: /^Filters/ });
+    const toolbar = filtersButton.closest(".job-results")?.querySelector(".results-toolbar");
+    expect(toolbar?.nextElementSibling).toBe(filtersButton);
+    await user.click(filtersButton);
+    const panel = screen.getByRole("dialog", { name: "Refine your search" });
+    await user.click(within(panel).getByRole("button", { name: "Full-time" }));
+    expect(screen.getByRole("button", { name: /Filters.*1 active filters/ })).toBeTruthy();
+    await user.click(within(panel).getByRole("button", { name: "Apply filters" }));
+    expect(screen.queryByRole("dialog", { name: "Refine your search" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /^Filters/ }));
+    expect(within(screen.getByRole("dialog", { name: "Refine your search" })).getByRole("button", { name: "Full-time" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("explains a real Recommended Jobs shortlist only after explicit consent choice", async () => {
     const mock = createSupabaseMock(
       { access_token: "matching-session-token", user: { id: "user-1", email: "person@example.com" } },
